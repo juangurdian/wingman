@@ -18,14 +18,20 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type {
+  ApprovalDecision,
   CreateSessionResult,
   InterruptResult,
+  ListApprovalsResult,
+  ResolveApprovalResult,
   SendMessageResult,
   SessionDetail,
   SessionProvider,
   SessionSummary,
+  SteerResult,
   Transcript,
   TranscriptItem,
+  WaitTurnOptions,
+  WaitTurnResult,
 } from './types.js';
 
 interface WingmanClaudeSession {
@@ -618,6 +624,110 @@ export class ClaudeProvider implements SessionProvider {
     } finally {
       this.activeTurns.delete(sessionId);
     }
+  }
+
+  async waitTurn(sessionId: string, opts?: WaitTurnOptions): Promise<WaitTurnResult> {
+    const timeoutMs = opts?.timeoutMs ?? 60_000;
+    const pollIntervalMs = opts?.pollIntervalMs ?? 500;
+
+    if (useMock()) {
+      const mock = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
+      if (!mock) throw new Error(`Unknown mock session: ${sessionId}`);
+
+      const activeTurn = this.activeTurns.get(sessionId);
+      if (!activeTurn) {
+        const lastAssistant = [...mock.items].reverse().find((i) => i.role === 'assistant');
+        return {
+          sessionId,
+          status: 'idle',
+          latestMessage: lastAssistant?.text?.slice(0, 200),
+        };
+      }
+
+      const turnId = activeTurn.turnId;
+      const startTime = Date.now();
+
+      while (Date.now() - startTime < timeoutMs) {
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+
+        const currentTurn = this.activeTurns.get(sessionId);
+        if (!currentTurn || currentTurn.turnId !== turnId) {
+          const lastAssistant = [...mock.items]
+            .reverse()
+            .find((i) => i.role === 'assistant' && i.turnId === turnId);
+          return {
+            sessionId,
+            turnId,
+            status: 'completed',
+            latestMessage: lastAssistant?.text?.slice(0, 200),
+          };
+        }
+      }
+
+      return { sessionId, turnId, status: 'timeout' };
+    }
+
+    const activeTurn = this.activeTurns.get(sessionId);
+    if (!activeTurn) {
+      return { sessionId, status: 'idle' };
+    }
+
+    const turnId = activeTurn.turnId;
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+
+      const currentTurn = this.activeTurns.get(sessionId);
+      if (!currentTurn || currentTurn.turnId !== turnId) {
+        try {
+          const transcript = await this.readTranscript(sessionId, 10);
+          const lastAssistant = [...transcript.items].reverse().find((i) => i.role === 'assistant');
+          return {
+            sessionId,
+            turnId,
+            status: 'completed',
+            latestMessage: lastAssistant?.text?.slice(0, 200),
+          };
+        } catch {
+          return { sessionId, turnId, status: 'completed' };
+        }
+      }
+    }
+
+    return { sessionId, turnId, status: 'timeout' };
+  }
+
+  async steer(_sessionId: string, _text: string): Promise<SteerResult> {
+    return {
+      sessionId: _sessionId,
+      accepted: false,
+      error:
+        'Claude does not support mid-turn steering. Use interrupt() to stop the current turn, ' +
+        'then send_message() with your new instructions.',
+    };
+  }
+
+  async listApprovals(sessionId: string): Promise<ListApprovalsResult> {
+    return {
+      sessionId,
+      approvals: [],
+    };
+  }
+
+  async resolveApproval(
+    sessionId: string,
+    approvalId: string,
+    _decision: ApprovalDecision,
+  ): Promise<ResolveApprovalResult> {
+    return {
+      sessionId,
+      approvalId,
+      resolved: false,
+      error:
+        'Claude does not support programmatic approval resolution. Approvals must be handled ' +
+        'in the local Claude CLI session directly.',
+    };
   }
 }
 
