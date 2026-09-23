@@ -76,6 +76,19 @@ npm run pair
 
 Then ask the host to call `list_sessions` → `read_transcript` / `send_message` / `interrupt`.
 
+### Host-specific guides
+
+Different MCP hosts have different configuration methods. See the detailed guides:
+
+| Host | Support | Guide |
+|------|---------|-------|
+| **Grok Bot** | ✅ Full | [docs/hosts/remote-hosts.md](docs/hosts/remote-hosts.md) |
+| **Cursor IDE** | ✅ Full | [docs/hosts/cursor-ide.md](docs/hosts/cursor-ide.md) |
+| **Claude Desktop** | ⚠️ Limited | [docs/hosts/claude-desktop.md](docs/hosts/claude-desktop.md) |
+| **Other clients** | Varies | [docs/hosts/generic-mcp-client.md](docs/hosts/generic-mcp-client.md) |
+
+> **Note**: Wingman is a remote HTTP MCP server. Hosts that support HTTP + bearer auth work natively. Stdio-only hosts (like Claude Desktop) require a bridge — see the Claude Desktop guide for workarounds.
+
 ### Real provider modes
 
 **Codex** — Requires `codex` on `PATH`. Wingman speaks **Codex app-server** JSON-RPC (`codex app-server` over stdio).
