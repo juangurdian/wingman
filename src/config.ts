@@ -83,3 +83,40 @@ export function resolveToken(): string | undefined {
 export function mcpUrl(host: string, port: number, path = '/mcp'): string {
   return `http://${host}:${port}${path}`;
 }
+
+// Timeout configuration with environment variable overrides
+
+/** Default timeout for Claude send_message SDK calls (ms). */
+export const CLAUDE_SEND_TIMEOUT_MS_DEFAULT = 120_000;
+
+/** Default timeout for wait_turn polling (ms). */
+export const WINGMAN_WAIT_TURN_TIMEOUT_MS_DEFAULT = 60_000;
+
+/** Default poll interval for wait_turn (ms). */
+export const WINGMAN_WAIT_TURN_POLL_MS_DEFAULT = 500;
+
+export function resolveClaudeSendTimeoutMs(): number {
+  const env = process.env.CLAUDE_SEND_TIMEOUT_MS?.trim();
+  if (env && /^\d+$/.test(env)) return Number(env);
+  return CLAUDE_SEND_TIMEOUT_MS_DEFAULT;
+}
+
+export function resolveWaitTurnTimeoutMs(): number {
+  const env = process.env.WINGMAN_WAIT_TURN_TIMEOUT_MS?.trim();
+  if (env && /^\d+$/.test(env)) return Number(env);
+  return WINGMAN_WAIT_TURN_TIMEOUT_MS_DEFAULT;
+}
+
+export function resolveWaitTurnPollMs(): number {
+  const env = process.env.WINGMAN_WAIT_TURN_POLL_MS?.trim();
+  if (env && /^\d+$/.test(env)) return Number(env);
+  return WINGMAN_WAIT_TURN_POLL_MS_DEFAULT;
+}
+
+// Health endpoint configuration
+
+/** Whether /healthz requires bearer auth. Default: true (auth required). */
+export function isHealthzAuthFree(): boolean {
+  const env = process.env.WINGMAN_HEALTHZ_AUTH_FREE?.trim().toLowerCase();
+  return env === '1' || env === 'true';
+}

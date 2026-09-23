@@ -230,13 +230,15 @@ class MockClaudeEnabled implements SessionProvider {
     this.activeTurnId = undefined;
     return { sessionId, turnId, status: turnId ? 'interrupted' : 'no_active_turn' };
   }
-  async createSession(opts?: { cwd?: string; prompt?: string }): Promise<CreateSessionResult> {
+  async createSession(opts?: { cwd?: string; prompt?: string; name?: string; tags?: string[] }): Promise<CreateSessionResult> {
     const id = `claude_created_${Date.now()}`;
     this.sessions.push({
       id,
       provider: 'claude',
       cwd: opts?.cwd,
       preview: opts?.prompt,
+      name: opts?.name,
+      tags: opts?.tags,
       status: 'idle',
       source: 'wingman',
     });
@@ -283,6 +285,15 @@ class MockClaudeEnabled implements SessionProvider {
       resolved: false,
       error: 'Claude does not support programmatic approval resolution.',
     };
+  }
+  async setSessionMeta(sessionId: string, meta: SetSessionMetaOptions): Promise<SetSessionMetaResult> {
+    const session = this.sessions.find((s) => s.id === sessionId);
+    if (!session) {
+      return { sessionId, updated: false, error: `Session not found: ${sessionId}` };
+    }
+    if (meta.name !== undefined) session.name = meta.name;
+    if (meta.tags !== undefined) session.tags = meta.tags;
+    return { sessionId, updated: true, name: session.name, tags: session.tags };
   }
 }
 
@@ -660,6 +671,8 @@ import type {
   SteerResult,
   ListApprovalsResult,
   ResolveApprovalResult,
+  SetSessionMetaResult,
+  SetSessionMetaOptions,
   Approval,
   ApprovalDecision,
   WaitTurnOptions,
@@ -970,5 +983,103 @@ describe('tool handlers for Claude wait/steer/approvals parity', () => {
     const body = JSON.parse(res.content[0]!.text);
     expect(body.resolved).toBe(false);
     expect(body.error).toMatch(/claude does not support/i);
+  });
+});
+
+describe('tool handlers for set_session_meta', () => {
+  let claude: MockClaudeEnabled;
+  let handlers: ReturnType<typeof createToolHandlers>;
+
+  beforeEach(() => {
+    claude = new MockClaudeEnabled();
+    handlers = createToolHandlers(registry(new MockCodex(), claude));
+  });
+
+  it('set_session_meta updates name', async () => {
+    const res = await handlers.set_session_meta({
+      provider: 'claude',
+      session_id: 'claude_test_1',
+      name: 'Renamed Session',
+    });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.updated).toBe(true);
+    expect(body.name).toBe('Renamed Session');
+  });
+
+  it('set_session_meta updates tags', async () => {
+    const res = await handlers.set_session_meta({
+      provider: 'claude',
+      session_id: 'claude_test_1',
+      tags: ['tag1', 'tag2'],
+    });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.updated).toBe(true);
+    expect(body.tags).toEqual(['tag1', 'tag2']);
+  });
+
+  it('set_session_meta updates both name and tags', async () => {
+    const res = await handlers.set_session_meta({
+      provider: 'claude',
+      session_id: 'claude_test_1',
+      name: 'Full Update',
+      tags: ['a', 'b', 'c'],
+    });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.updated).toBe(true);
+    expect(body.name).toBe('Full Update');
+    expect(body.tags).toEqual(['a', 'b', 'c']);
+  });
+
+  it('set_session_meta returns error for unknown session', async () => {
+    const res = await handlers.set_session_meta({
+      provider: 'claude',
+      session_id: 'nonexistent',
+      name: 'Test',
+    });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.updated).toBe(false);
+    expect(body.error).toMatch(/not found/i);
+  });
+
+  it('set_session_meta returns error for unsupported provider', async () => {
+    const disabledClaude = new MockClaudeDisabled();
+    const handlersWithDisabled = createToolHandlers(registry(new MockCodex(), disabledClaude));
+    
+    const res = await handlersWithDisabled.set_session_meta({
+      provider: 'claude',
+      session_id: 'test',
+      name: 'Test',
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toMatch(/not supported/i);
+  });
+
+  it('create_session with name and tags persists metadata', async () => {
+    const createRes = await handlers.create_session({
+      provider: 'claude',
+      cwd: '/tmp/test',
+      name: 'Named Session',
+      tags: ['created', 'with-tags'],
+    });
+    expect(createRes.isError).toBeUndefined();
+    
+    const createBody = JSON.parse(createRes.content[0]!.text);
+    expect(createBody.sessionId).toBeDefined();
+    
+    const listRes = await handlers.list_sessions({ provider: 'claude' });
+    const listBody = JSON.parse(listRes.content[0]!.text);
+    const created = listBody.sessions.find((s: SessionSummary) => s.id === createBody.sessionId);
+    
+    expect(created).toBeDefined();
+    expect(created.name).toBe('Named Session');
+    expect(created.tags).toEqual(['created', 'with-tags']);
   });
 });

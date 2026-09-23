@@ -32,13 +32,20 @@ import type {
   TranscriptItem,
   WaitTurnOptions,
   WaitTurnResult,
+  SetSessionMetaOptions,
+  SetSessionMetaResult,
 } from './types.js';
+import {
+  resolveClaudeSendTimeoutMs,
+  resolveWaitTurnTimeoutMs,
+} from '../config.js';
 
 interface WingmanClaudeSession {
   sessionId: string;
   cwd: string;
   name?: string;
   preview?: string;
+  tags?: string[];
   createdAt: number;
   updatedAt: number;
 }
@@ -55,6 +62,7 @@ interface MockDiscoveredSession {
   firstPrompt?: string;
   gitBranch?: string;
   tag?: string;
+  tags?: string[];
   createdAt: number;
   updatedAt: number;
   items: TranscriptItem[];
@@ -204,13 +212,14 @@ export class ClaudeProvider implements SessionProvider {
     }
   }
 
-  private seedMock(opts?: { cwd?: string; name?: string; preview?: string }): MockDiscoveredSession {
+  private seedMock(opts?: { cwd?: string; name?: string; preview?: string; tags?: string[] }): MockDiscoveredSession {
     const now = Date.now();
     const s: MockDiscoveredSession = {
       id: `claude_mock_${randomUUID().slice(0, 8)}`,
       cwd: opts?.cwd ?? process.cwd(),
       name: opts?.name,
       preview: opts?.preview,
+      tags: opts?.tags,
       createdAt: now,
       updatedAt: now,
       items: [],
@@ -231,6 +240,7 @@ export class ClaudeProvider implements SessionProvider {
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         source: 'wingman' as const,
+        tags: s.tags,
       }));
 
       if (!discoveryEnabled()) {
@@ -249,6 +259,7 @@ export class ClaudeProvider implements SessionProvider {
         source: 'discovered' as const,
         gitBranch: s.gitBranch,
         tag: s.tag,
+        tags: s.tags ?? (s.tag ? [s.tag] : undefined),
       }));
 
       const wingmanIds = new Set(wingmanSessions.map((s) => s.id));
@@ -274,6 +285,7 @@ export class ClaudeProvider implements SessionProvider {
       createdAt: reg.createdAt,
       updatedAt: reg.updatedAt,
       source: 'wingman' as const,
+      tags: reg.tags,
     }));
 
     if (!discoveryEnabled()) {
@@ -526,12 +538,13 @@ export class ClaudeProvider implements SessionProvider {
     };
   }
 
-  async createSession(opts?: { cwd?: string; prompt?: string }): Promise<CreateSessionResult> {
+  async createSession(opts?: { cwd?: string; prompt?: string; name?: string; tags?: string[] }): Promise<CreateSessionResult> {
     if (useMock()) {
       const s = this.seedMock({
         cwd: opts?.cwd ?? process.cwd(),
-        name: 'mock-claude-created',
+        name: opts?.name ?? 'mock-claude-created',
         preview: opts?.prompt?.slice(0, 80),
+        tags: opts?.tags,
       });
 
       if (opts?.prompt) {
@@ -555,8 +568,9 @@ export class ClaudeProvider implements SessionProvider {
       registerSession({
         sessionId,
         cwd: opts?.cwd ?? process.cwd(),
-        name: opts?.prompt?.slice(0, 40) || 'Wingman session',
+        name: opts?.name ?? opts?.prompt?.slice(0, 40) ?? 'Wingman session',
         preview: opts?.prompt?.slice(0, 80),
+        tags: opts?.tags,
         createdAt: now,
         updatedAt: now,
       });
@@ -627,7 +641,7 @@ export class ClaudeProvider implements SessionProvider {
   }
 
   async waitTurn(sessionId: string, opts?: WaitTurnOptions): Promise<WaitTurnResult> {
-    const timeoutMs = opts?.timeoutMs ?? 60_000;
+    const timeoutMs = opts?.timeoutMs ?? resolveWaitTurnTimeoutMs();
     const pollIntervalMs = opts?.pollIntervalMs ?? 500;
 
     if (useMock()) {
@@ -727,6 +741,53 @@ export class ClaudeProvider implements SessionProvider {
       error:
         'Claude does not support programmatic approval resolution. Approvals must be handled ' +
         'in the local Claude CLI session directly.',
+    };
+  }
+
+  async setSessionMeta(
+    sessionId: string,
+    meta: SetSessionMetaOptions,
+  ): Promise<SetSessionMetaResult> {
+    if (useMock()) {
+      const mock = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
+      if (!mock) {
+        return {
+          sessionId,
+          updated: false,
+          error: `Session not found: ${sessionId}`,
+        };
+      }
+      if (meta.name !== undefined) mock.name = meta.name;
+      if (meta.tags !== undefined) mock.tags = meta.tags;
+      mock.updatedAt = Date.now();
+      return {
+        sessionId,
+        updated: true,
+        name: mock.name,
+        tags: mock.tags,
+      };
+    }
+
+    const registry = loadRegistry();
+    const session = registry.sessions.find((s) => s.sessionId === sessionId);
+    if (!session) {
+      return {
+        sessionId,
+        updated: false,
+        error: `Session not found in Wingman registry: ${sessionId}. Only Wingman-owned sessions can have metadata set.`,
+      };
+    }
+
+    if (meta.name !== undefined) session.name = meta.name;
+    if (meta.tags !== undefined) session.tags = meta.tags;
+    session.updatedAt = Date.now();
+    saveRegistry(registry);
+
+    return {
+      sessionId,
+      updated: true,
+      name: session.name,
+      tags: session.tags,
     };
   }
 }

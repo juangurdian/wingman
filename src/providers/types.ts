@@ -20,8 +20,10 @@ export interface SessionSummary {
   source?: SessionSource;
   /** Git branch at end of session (discovered sessions). */
   gitBranch?: string;
-  /** User-set tag (discovered sessions). */
+  /** User-set tag (discovered sessions - legacy single tag). */
   tag?: string;
+  /** User-set tags for categorization/filtering. */
+  tags?: string[];
 }
 
 export interface TranscriptItem {
@@ -63,6 +65,8 @@ export interface CreateSessionResult {
 export interface SessionDetail extends SessionSummary {
   activeTurnId?: string;
   activeTurnStartedAt?: number;
+  /** User-set tags for categorization/filtering. */
+  tags?: string[];
 }
 
 export interface WaitTurnOptions {
@@ -132,6 +136,25 @@ export interface ResolveApprovalResult {
   error?: string;
 }
 
+export interface SetSessionMetaOptions {
+  /** Human-friendly name for the session */
+  name?: string;
+  /** Tags for categorization/filtering */
+  tags?: string[];
+}
+
+export interface SetSessionMetaResult {
+  sessionId: string;
+  /** Whether the metadata was updated */
+  updated: boolean;
+  /** Current name after update */
+  name?: string;
+  /** Current tags after update */
+  tags?: string[];
+  /** Error message if not updated */
+  error?: string;
+}
+
 export interface SessionProvider {
   readonly name: ProviderName;
   listSessions(): Promise<SessionSummary[]>;
@@ -139,7 +162,7 @@ export interface SessionProvider {
   readTranscript(sessionId: string, limit?: number): Promise<Transcript>;
   sendMessage(sessionId: string, text: string): Promise<SendMessageResult>;
   interrupt(sessionId: string): Promise<InterruptResult>;
-  createSession?(opts?: { cwd?: string; prompt?: string }): Promise<CreateSessionResult>;
+  createSession?(opts?: { cwd?: string; prompt?: string; name?: string; tags?: string[] }): Promise<CreateSessionResult>;
   
   /** Wait for an active turn to complete (Codex-specific) */
   waitTurn?(sessionId: string, opts?: WaitTurnOptions): Promise<WaitTurnResult>;
@@ -149,4 +172,6 @@ export interface SessionProvider {
   listApprovals?(sessionId: string): Promise<ListApprovalsResult>;
   /** Resolve a pending approval (Codex-specific) */
   resolveApproval?(sessionId: string, approvalId: string, decision: ApprovalDecision): Promise<ResolveApprovalResult>;
+  /** Set session metadata (name, tags) for easier discovery */
+  setSessionMeta?(sessionId: string, meta: SetSessionMetaOptions): Promise<SetSessionMetaResult>;
 }

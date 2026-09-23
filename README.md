@@ -138,16 +138,17 @@ flowchart LR
 
 | Tool | Args | Notes |
 |------|------|--------|
-| `list_sessions` | `provider?`: `codex` \| `claude` | Lists sessions for one or both providers (includes `status`, `source`) |
-| `get_session` | `provider`, `session_id` | Get detailed session info including status (`idle` / `running`) |
+| `list_sessions` | `provider?`: `codex` \| `claude` | Lists sessions for one or both providers (includes `status`, `source`, `tags`) |
+| `get_session` | `provider`, `session_id` | Get detailed session info including status (`idle` / `running`) and tags |
 | `read_transcript` | `provider`, `session_id`, `limit?` | Recent messages (newest at end) |
 | `send_message` | `provider`, `session_id`, `text` | Codex: `turn/start`; Claude: returns `accepted` quickly, turn runs async |
 | `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`; Claude: works when Wingman owns the active turn |
-| `create_session` | `provider`, `cwd?`, `prompt?` | Codex: `thread/start`; Claude: new session with optional initial prompt (async) |
+| `create_session` | `provider`, `cwd?`, `prompt?`, `name?`, `tags?` | Codex: `thread/start`; Claude: new session with optional name/tags (async) |
 | `wait_turn` | `provider`, `session_id`, `timeout_ms?`, `poll_interval_ms?` | Wait for turn to complete/fail/timeout; returns status + message snippet |
 | `steer` | `provider`, `session_id`, `text` | Add guidance to in-flight turn (Codex only; Claude returns unsupported) |
 | `list_approvals` | `provider`, `session_id` | List pending approvals (Codex); Claude returns empty array |
 | `resolve_approval` | `provider`, `session_id`, `approval_id`, `decision` | Resolve approval (Codex); Claude returns unsupported error |
+| `set_session_meta` | `provider`, `session_id`, `name?`, `tags?` | Set session name/tags for easier discovery (Wingman-owned sessions) |
 
 ### create_session behavior
 
@@ -170,6 +171,24 @@ For **Claude sessions**, `interrupt` works reliably when Wingman owns the active
 **Limitation**: Interrupting discovered sessions or sessions where the turn was started outside Wingman (e.g., via Claude CLI directly) may not work — Wingman has no active query handle to abort. In these cases, use the Claude CLI directly: `Ctrl+C` in the terminal or `claude interrupt`.
 
 For **Codex sessions**, `interrupt` requires a known active `turnId` tracked from `turn/started` notifications.
+
+### Session tags/names
+
+Sessions can have human-friendly names and tags for easier discovery and filtering:
+
+**create_session**: Pass `name` and/or `tags` when creating a session:
+```
+create_session({ provider: "claude", cwd: "/project", name: "Auth Refactor", tags: ["refactor", "auth"] })
+```
+
+**set_session_meta**: Update name/tags on existing Wingman-owned sessions:
+```
+set_session_meta({ provider: "claude", session_id: "sess_123", name: "Updated Name", tags: ["new", "tags"] })
+```
+
+Sessions returned by `list_sessions` and `get_session` include `name` and `tags` fields. For discovered Claude sessions, the legacy `tag` field is also converted to `tags`.
+
+**Note**: In real mode, `set_session_meta` only works for Wingman-owned sessions (sessions created via Wingman's `create_session`). Codex real mode does not support custom metadata.
 
 ### wait_turn (both providers)
 
@@ -219,6 +238,9 @@ Example Codex approval flow:
 | `WINGMAN_TOKEN` | (generated) | Bearer token for MCP auth |
 | `WINGMAN_PORT` | `3847` | MCP server port |
 | `WINGMAN_HOST` | `127.0.0.1` | MCP server bind address |
+| `WINGMAN_WAIT_TURN_TIMEOUT_MS` | `60000` | Default timeout for `wait_turn` polling |
+| `WINGMAN_WAIT_TURN_POLL_MS` | `500` | Default poll interval for `wait_turn` |
+| `WINGMAN_HEALTHZ_AUTH_FREE` | `false` | Set to `1` to allow unauthenticated `/healthz` access |
 
 ### Codex
 
@@ -236,6 +258,7 @@ Example Codex approval flow:
 | `CLAUDE_MOCK` | unset | Set to `1` for in-memory mock mode |
 | `CLAUDE_DISCOVER` | `1` | Set to `0` to disable session discovery |
 | `CLAUDE_DISCOVER_DIRS` | (all) | Colon-separated directories to search for sessions |
+| `CLAUDE_SEND_TIMEOUT_MS` | `120000` | Timeout for Claude SDK send operations |
 
 The Claude provider uses the bundled Agent SDK binary automatically. No separate `claude` CLI install is required unless you override `pathToClaudeCodeExecutable` in code.
 
@@ -270,8 +293,10 @@ Sessions returned by `list_sessions` include:
 | Field | Type | Description |
 |-------|------|-------------|
 | `source` | `'wingman' \| 'discovered'` | Origin of the session |
+| `name` | `string?` | Human-friendly session name |
+| `tags` | `string[]?` | User-set tags for categorization/filtering |
 | `gitBranch` | `string?` | Git branch at end of session (discovered) |
-| `tag` | `string?` | User-set session tag (discovered) |
+| `tag` | `string?` | Legacy single tag (discovered sessions only) |
 
 ### Claude session storage
 
@@ -311,6 +336,29 @@ For local development:
   "createdAt": "...",
   "mock": true
 }
+```
+
+## Health Endpoint
+
+Wingman exposes a `/healthz` endpoint for monitoring and tunnel health checks.
+
+**Default behavior**: Requires bearer authentication (same token as `/mcp`).
+
+**Auth-free mode**: Set `WINGMAN_HEALTHZ_AUTH_FREE=1` to allow unauthenticated access to `/healthz`. This is useful for:
+- Cloudflare Tunnel health checks
+- Load balancer probes
+- Uptime monitors that can't send auth headers
+
+```bash
+# Enable auth-free healthz (document the security tradeoff)
+WINGMAN_HEALTHZ_AUTH_FREE=1 npm run pair
+```
+
+**Security tradeoff**: An auth-free `/healthz` reveals that Wingman is running but exposes no secrets, session data, or MCP functionality. The `/mcp` endpoint always requires bearer auth.
+
+Example response:
+```json
+{ "ok": true, "service": "wingman" }
 ```
 
 ## Doctor / Health Check
