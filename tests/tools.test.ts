@@ -51,6 +51,104 @@ class MockCodex implements SessionProvider {
   }
 }
 
+class MockClaudeWithDiscovery implements SessionProvider {
+  readonly name = 'claude' as const;
+  wingmanSessions: SessionSummary[] = [
+    {
+      id: 'sess_wingman_1',
+      provider: 'claude',
+      cwd: '/home/user/project-a',
+      name: 'Wingman Session A',
+      preview: 'wingman prompt',
+      status: 'idle',
+      source: 'wingman',
+      createdAt: Date.now() - 1000,
+      updatedAt: Date.now() - 500,
+    },
+  ];
+  discoveredSessions: SessionSummary[] = [
+    {
+      id: 'sess_discovered_1',
+      provider: 'claude',
+      cwd: '/home/user/project-b',
+      name: 'Discovered Session B',
+      preview: 'discovered prompt',
+      status: 'idle',
+      source: 'discovered',
+      gitBranch: 'main',
+      tag: 'test',
+      createdAt: Date.now() - 2000,
+      updatedAt: Date.now() - 100,
+    },
+    {
+      id: 'sess_discovered_2',
+      provider: 'claude',
+      cwd: '/home/user/project-c',
+      name: 'Discovered Session C',
+      preview: 'another discovered prompt',
+      status: 'idle',
+      source: 'discovered',
+      gitBranch: 'feature',
+      createdAt: Date.now() - 3000,
+      updatedAt: Date.now() - 2000,
+    },
+  ];
+  transcripts = new Map<string, TranscriptItem[]>([
+    ['sess_wingman_1', [{ role: 'user', text: 'wingman prompt' }, { role: 'assistant', text: 'wingman response' }]],
+    ['sess_discovered_1', [{ role: 'user', text: 'discovered prompt' }, { role: 'assistant', text: 'discovered response' }]],
+    ['sess_discovered_2', [{ role: 'user', text: 'another discovered prompt' }]],
+  ]);
+  messages: string[] = [];
+
+  async listSessions(): Promise<SessionSummary[]> {
+    const wingmanIds = new Set(this.wingmanSessions.map((s) => s.id));
+    const merged = [...this.wingmanSessions];
+    for (const ds of this.discoveredSessions) {
+      if (!wingmanIds.has(ds.id)) {
+        merged.push(ds);
+      }
+    }
+    merged.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    return merged;
+  }
+
+  async readTranscript(sessionId: string, limit = 50): Promise<Transcript> {
+    const items = this.transcripts.get(sessionId);
+    if (!items) throw new Error(`Unknown session: ${sessionId}`);
+    return {
+      sessionId,
+      provider: 'claude',
+      items: items.slice(-limit),
+    };
+  }
+
+  async sendMessage(sessionId: string, text: string): Promise<SendMessageResult> {
+    const items = this.transcripts.get(sessionId);
+    if (!items) throw new Error(`Unknown session: ${sessionId}`);
+    items.push({ role: 'user', text });
+    items.push({ role: 'assistant', text: `[mock] Received: ${text}` });
+    this.messages.push(text);
+    return { sessionId, turnId: 'turn_mock', status: 'completed' };
+  }
+
+  async interrupt(sessionId: string): Promise<InterruptResult> {
+    return { sessionId, turnId: 'turn_mock', status: 'interrupted' };
+  }
+
+  async createSession(opts?: { cwd?: string; prompt?: string }): Promise<CreateSessionResult> {
+    const id = 'sess_created';
+    this.wingmanSessions.push({
+      id,
+      provider: 'claude',
+      cwd: opts?.cwd,
+      preview: opts?.prompt,
+      source: 'wingman',
+    });
+    this.transcripts.set(id, []);
+    return { sessionId: id, provider: 'claude', cwd: opts?.cwd };
+  }
+}
+
 class MockClaudeDisabled implements SessionProvider {
   readonly name = 'claude' as const;
   async listSessions(): Promise<SessionSummary[]> {
@@ -76,6 +174,7 @@ class MockClaudeEnabled implements SessionProvider {
       preview: 'hello claude',
       status: 'idle',
       cwd: '/tmp/claude-test',
+      source: 'wingman',
     },
   ];
   items: TranscriptItem[] = [
@@ -121,6 +220,7 @@ class MockClaudeEnabled implements SessionProvider {
       cwd: opts?.cwd,
       preview: opts?.prompt,
       status: 'idle',
+      source: 'wingman',
     });
     if (opts?.prompt) {
       this.items.push({ role: 'user', text: opts.prompt, turnId: 'turn_init' });
@@ -306,5 +406,148 @@ describe('tool handlers with mocked Claude provider (enabled)', () => {
     });
     expect(res.isError).toBe(true);
     expect(res.content[0]!.text).toMatch(/unknown session/i);
+  });
+});
+
+describe('Claude session discovery with mocked provider', () => {
+  let claude: MockClaudeWithDiscovery;
+  let handlers: ReturnType<typeof createToolHandlers>;
+
+  beforeEach(() => {
+    claude = new MockClaudeWithDiscovery();
+    handlers = createToolHandlers(registry(new MockCodex(), claude));
+  });
+
+  it('list_sessions returns merged wingman + discovered sessions', async () => {
+    const res = await handlers.list_sessions({ provider: 'claude' });
+    expect(res.isError).toBeUndefined();
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessions.length).toBe(3);
+
+    const wingman = body.sessions.find((s: SessionSummary) => s.id === 'sess_wingman_1');
+    expect(wingman).toBeDefined();
+    expect(wingman.source).toBe('wingman');
+
+    const discovered1 = body.sessions.find((s: SessionSummary) => s.id === 'sess_discovered_1');
+    expect(discovered1).toBeDefined();
+    expect(discovered1.source).toBe('discovered');
+    expect(discovered1.gitBranch).toBe('main');
+    expect(discovered1.tag).toBe('test');
+
+    const discovered2 = body.sessions.find((s: SessionSummary) => s.id === 'sess_discovered_2');
+    expect(discovered2).toBeDefined();
+    expect(discovered2.source).toBe('discovered');
+  });
+
+  it('list_sessions deduplicates by id (wingman takes precedence)', async () => {
+    claude.discoveredSessions.push({
+      id: 'sess_wingman_1',
+      provider: 'claude',
+      cwd: '/different/path',
+      name: 'Duplicate Discovered',
+      preview: 'should be ignored',
+      status: 'idle',
+      source: 'discovered',
+      updatedAt: Date.now(),
+    });
+
+    const res = await handlers.list_sessions({ provider: 'claude' });
+    const body = JSON.parse(res.content[0]!.text);
+
+    const matches = body.sessions.filter((s: SessionSummary) => s.id === 'sess_wingman_1');
+    expect(matches.length).toBe(1);
+    expect(matches[0].source).toBe('wingman');
+    expect(matches[0].name).toBe('Wingman Session A');
+  });
+
+  it('list_sessions sorts by updatedAt descending', async () => {
+    const res = await handlers.list_sessions({ provider: 'claude' });
+    const body = JSON.parse(res.content[0]!.text);
+
+    expect(body.sessions[0].id).toBe('sess_discovered_1');
+    expect(body.sessions[1].id).toBe('sess_wingman_1');
+    expect(body.sessions[2].id).toBe('sess_discovered_2');
+  });
+
+  it('read_transcript works for discovered sessions', async () => {
+    const res = await handlers.read_transcript({
+      provider: 'claude',
+      session_id: 'sess_discovered_1',
+      limit: 10,
+    });
+    expect(res.isError).toBeUndefined();
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessionId).toBe('sess_discovered_1');
+    expect(body.items.length).toBe(2);
+    expect(body.items[0].text).toBe('discovered prompt');
+    expect(body.items[1].text).toBe('discovered response');
+  });
+
+  it('read_transcript works for wingman sessions', async () => {
+    const res = await handlers.read_transcript({
+      provider: 'claude',
+      session_id: 'sess_wingman_1',
+      limit: 10,
+    });
+    expect(res.isError).toBeUndefined();
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessionId).toBe('sess_wingman_1');
+    expect(body.items.length).toBe(2);
+  });
+
+  it('send_message works for discovered sessions', async () => {
+    const res = await handlers.send_message({
+      provider: 'claude',
+      session_id: 'sess_discovered_1',
+      text: 'test message to discovered',
+    });
+    expect(res.isError).toBeUndefined();
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessionId).toBe('sess_discovered_1');
+    expect(body.status).toBe('completed');
+    expect(claude.messages).toContain('test message to discovered');
+  });
+
+  it('interrupt works for discovered sessions', async () => {
+    const res = await handlers.interrupt({
+      provider: 'claude',
+      session_id: 'sess_discovered_1',
+    });
+    expect(res.isError).toBeUndefined();
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessionId).toBe('sess_discovered_1');
+    expect(body.status).toBe('interrupted');
+  });
+
+  it('create_session creates wingman-owned session', async () => {
+    const res = await handlers.create_session({
+      provider: 'claude',
+      cwd: '/tmp/new-project',
+      prompt: 'initial prompt',
+    });
+    expect(res.isError).toBeUndefined();
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessionId).toBe('sess_created');
+    expect(body.provider).toBe('claude');
+
+    const listRes = await handlers.list_sessions({ provider: 'claude' });
+    const listBody = JSON.parse(listRes.content[0]!.text);
+    const created = listBody.sessions.find((s: SessionSummary) => s.id === 'sess_created');
+    expect(created).toBeDefined();
+    expect(created.source).toBe('wingman');
+  });
+
+  it('sessions include new fields: source, gitBranch, tag', async () => {
+    const res = await handlers.list_sessions({ provider: 'claude' });
+    const body = JSON.parse(res.content[0]!.text);
+
+    for (const session of body.sessions) {
+      expect(session).toHaveProperty('source');
+      expect(['wingman', 'discovered']).toContain(session.source);
+    }
+
+    const discovered = body.sessions.find((s: SessionSummary) => s.id === 'sess_discovered_1');
+    expect(discovered.gitBranch).toBe('main');
+    expect(discovered.tag).toBe('test');
   });
 });
