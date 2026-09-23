@@ -627,3 +627,245 @@ describe('Claude session discovery with mocked provider', () => {
     expect(discovered.tag).toBe('test');
   });
 });
+
+import type {
+  WaitTurnResult,
+  SteerResult,
+  ListApprovalsResult,
+  ResolveApprovalResult,
+  Approval,
+  ApprovalDecision,
+  WaitTurnOptions,
+} from '../src/providers/types.js';
+
+class MockCodexWithApprovals implements SessionProvider {
+  readonly name = 'codex' as const;
+  sessions: SessionSummary[] = [
+    {
+      id: 'thr_test_1',
+      provider: 'codex',
+      preview: 'hi',
+      status: 'idle',
+    },
+  ];
+  messages: string[] = [];
+  activeTurnId?: string;
+  pendingApprovals: Approval[] = [];
+
+  async listSessions() {
+    return this.sessions;
+  }
+  async getSession(sessionId: string): Promise<SessionDetail | null> {
+    const session = this.sessions.find((s) => s.id === sessionId);
+    if (!session) return null;
+    return { ...session, status: this.activeTurnId ? 'running' : 'idle', activeTurnId: this.activeTurnId };
+  }
+  async readTranscript(sessionId: string, limit = 50): Promise<Transcript> {
+    return {
+      sessionId,
+      provider: 'codex',
+      items: this.messages.slice(-limit).map((text) => ({
+        role: 'user' as const,
+        text,
+      })),
+    };
+  }
+  async sendMessage(sessionId: string, text: string): Promise<SendMessageResult> {
+    this.messages.push(text);
+    const turnId = 'turn_test';
+    this.activeTurnId = turnId;
+    
+    // Simulate approval if sudo in message
+    if (text.includes('sudo')) {
+      this.pendingApprovals.push({
+        id: 'appr_test_1',
+        sessionId,
+        turnId,
+        kind: 'command',
+        command: text,
+        reason: 'Needs approval',
+        requestedAt: Date.now(),
+      });
+    }
+    
+    return { sessionId, turnId, status: 'inProgress' };
+  }
+  async interrupt(sessionId: string): Promise<InterruptResult> {
+    const turnId = this.activeTurnId;
+    this.activeTurnId = undefined;
+    return { sessionId, turnId, status: 'interrupted' };
+  }
+  async createSession(opts?: { cwd?: string; prompt?: string }): Promise<CreateSessionResult> {
+    const id = 'thr_created';
+    this.sessions.push({ id, provider: 'codex', cwd: opts?.cwd, preview: opts?.prompt });
+    return { sessionId: id, provider: 'codex', cwd: opts?.cwd, status: opts?.prompt ? 'accepted' : 'created' };
+  }
+  
+  async waitTurn(sessionId: string, opts?: WaitTurnOptions): Promise<WaitTurnResult> {
+    if (this.pendingApprovals.length > 0) {
+      return {
+        sessionId,
+        turnId: this.activeTurnId,
+        status: 'inProgress' as WaitTurnResult['status'],
+        latestMessage: `Waiting for ${this.pendingApprovals.length} approval(s)`,
+      };
+    }
+    if (!this.activeTurnId) {
+      return { sessionId, status: 'idle' };
+    }
+    // Simulate turn completion
+    this.activeTurnId = undefined;
+    return { sessionId, turnId: 'turn_test', status: 'completed', latestMessage: 'Done' };
+  }
+  
+  async steer(sessionId: string, text: string): Promise<SteerResult> {
+    if (!this.activeTurnId) {
+      return { sessionId, accepted: false, error: 'No active turn' };
+    }
+    this.messages.push(`[steer] ${text}`);
+    return { sessionId, turnId: this.activeTurnId, accepted: true };
+  }
+  
+  async listApprovals(sessionId: string): Promise<ListApprovalsResult> {
+    return { sessionId, approvals: this.pendingApprovals.filter(a => a.sessionId === sessionId) };
+  }
+  
+  async resolveApproval(sessionId: string, approvalId: string, decision: ApprovalDecision): Promise<ResolveApprovalResult> {
+    const idx = this.pendingApprovals.findIndex(a => a.id === approvalId);
+    if (idx === -1) {
+      return { sessionId, approvalId, resolved: false, error: 'Approval not found' };
+    }
+    this.pendingApprovals.splice(idx, 1);
+    if (decision === 'decline' || decision === 'cancel') {
+      this.activeTurnId = undefined;
+    }
+    return { sessionId, approvalId, resolved: true, decision };
+  }
+}
+
+describe('tool handlers for Codex wait/steer/approvals', () => {
+  let codex: MockCodexWithApprovals;
+  let handlers: ReturnType<typeof createToolHandlers>;
+
+  beforeEach(() => {
+    codex = new MockCodexWithApprovals();
+    handlers = createToolHandlers(registry(codex, new MockClaudeDisabled()));
+  });
+
+  it('wait_turn returns completed when turn finishes', async () => {
+    await handlers.send_message({ provider: 'codex', session_id: 'thr_test_1', text: 'test' });
+    
+    const res = await handlers.wait_turn({ provider: 'codex', session_id: 'thr_test_1' });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.status).toBe('completed');
+  });
+
+  it('wait_turn returns idle when no active turn', async () => {
+    const res = await handlers.wait_turn({ provider: 'codex', session_id: 'thr_test_1' });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.status).toBe('idle');
+  });
+
+  it('steer adds guidance to active turn', async () => {
+    await handlers.send_message({ provider: 'codex', session_id: 'thr_test_1', text: 'task' });
+    
+    const res = await handlers.steer({ provider: 'codex', session_id: 'thr_test_1', text: 'guidance' });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.accepted).toBe(true);
+    expect(codex.messages.some(m => m.includes('[steer]'))).toBe(true);
+  });
+
+  it('steer returns error when no active turn', async () => {
+    const res = await handlers.steer({ provider: 'codex', session_id: 'thr_test_1', text: 'guidance' });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.accepted).toBe(false);
+    expect(body.error).toMatch(/no active turn/i);
+  });
+
+  it('list_approvals returns pending approvals', async () => {
+    await handlers.send_message({ provider: 'codex', session_id: 'thr_test_1', text: 'sudo test' });
+    
+    const res = await handlers.list_approvals({ provider: 'codex', session_id: 'thr_test_1' });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.approvals.length).toBe(1);
+    expect(body.approvals[0].kind).toBe('command');
+  });
+
+  it('list_approvals returns empty array when none pending', async () => {
+    const res = await handlers.list_approvals({ provider: 'codex', session_id: 'thr_test_1' });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.approvals).toEqual([]);
+  });
+
+  it('resolve_approval accepts and clears approval', async () => {
+    await handlers.send_message({ provider: 'codex', session_id: 'thr_test_1', text: 'sudo test' });
+    
+    const res = await handlers.resolve_approval({
+      provider: 'codex',
+      session_id: 'thr_test_1',
+      approval_id: 'appr_test_1',
+      decision: 'accept',
+    });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.resolved).toBe(true);
+    expect(body.decision).toBe('accept');
+    
+    // Verify approval is cleared
+    const listRes = await handlers.list_approvals({ provider: 'codex', session_id: 'thr_test_1' });
+    const listBody = JSON.parse(listRes.content[0]!.text);
+    expect(listBody.approvals.length).toBe(0);
+  });
+
+  it('resolve_approval decline ends turn', async () => {
+    await handlers.send_message({ provider: 'codex', session_id: 'thr_test_1', text: 'sudo test' });
+    
+    await handlers.resolve_approval({
+      provider: 'codex',
+      session_id: 'thr_test_1',
+      approval_id: 'appr_test_1',
+      decision: 'decline',
+    });
+    
+    const sessionRes = await handlers.get_session({ provider: 'codex', session_id: 'thr_test_1' });
+    const sessionBody = JSON.parse(sessionRes.content[0]!.text);
+    expect(sessionBody.status).toBe('idle');
+  });
+
+  it('resolve_approval returns error for unknown approval', async () => {
+    const res = await handlers.resolve_approval({
+      provider: 'codex',
+      session_id: 'thr_test_1',
+      approval_id: 'nonexistent',
+      decision: 'accept',
+    });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.resolved).toBe(false);
+    expect(body.error).toMatch(/not found/i);
+  });
+
+  it('wait_turn indicates pending approvals', async () => {
+    await handlers.send_message({ provider: 'codex', session_id: 'thr_test_1', text: 'sudo test' });
+    
+    const res = await handlers.wait_turn({ provider: 'codex', session_id: 'thr_test_1' });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.latestMessage).toMatch(/approval/i);
+  });
+});

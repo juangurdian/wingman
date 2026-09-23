@@ -43,12 +43,12 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | Interrupt hardening | ✅ | Works for Wingman-owned query handles; documented limits |
 | Tests | ✅ | Unit tests for all new features |
 | ROADMAP + README polish | ✅ | Clear positioning; SDK resume ≠ TTY typing |
+| Codex wait/steer/approvals | ✅ | `wait_turn`, `steer`, `list_approvals`, `resolve_approval` tools; mock coverage |
 
 ### Next
 
 | Feature | Description |
 |---------|-------------|
-| Codex wait/steer/approvals | Stream turn progress; approval hooks for sandbox prompts |
 | `npx wingman-mcp` install | ✅ Shipped — run `npx wingman-mcp` or `npm i -g wingman-mcp` |
 | Durable tunnel helpers | Built-in Cloudflare/Tailscale setup wizard |
 | Session tags/names | Label sessions for easier discovery |

@@ -35,6 +35,33 @@ export const GetSessionSchema = z.object({
   session_id: z.string().min(1),
 });
 
+export const WaitTurnSchema = z.object({
+  provider: z.literal('codex'),
+  session_id: z.string().min(1),
+  timeout_ms: z.number().int().positive().max(300_000).optional(),
+  poll_interval_ms: z.number().int().positive().max(10_000).optional(),
+});
+
+export const SteerSchema = z.object({
+  provider: z.literal('codex'),
+  session_id: z.string().min(1),
+  text: z.string().min(1),
+});
+
+export const ListApprovalsSchema = z.object({
+  provider: z.literal('codex'),
+  session_id: z.string().min(1),
+});
+
+export const ApprovalDecisionSchema = z.enum(['accept', 'acceptForSession', 'decline', 'cancel']);
+
+export const ResolveApprovalSchema = z.object({
+  provider: z.literal('codex'),
+  session_id: z.string().min(1),
+  approval_id: z.string().min(1),
+  decision: ApprovalDecisionSchema,
+});
+
 function textResult(data: unknown) {
   return {
     content: [
@@ -142,6 +169,65 @@ export function createToolHandlers(providers: ProviderRegistry) {
         if (!result) {
           return errorResult(`Session not found: ${args.session_id}`);
         }
+        return textResult(result);
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+
+    async wait_turn(args: z.infer<typeof WaitTurnSchema>) {
+      try {
+        const provider = providers.get(args.provider);
+        if (!provider.waitTurn) {
+          return errorResult(`wait_turn not supported for ${args.provider}`);
+        }
+        const result = await provider.waitTurn(args.session_id, {
+          timeoutMs: args.timeout_ms,
+          pollIntervalMs: args.poll_interval_ms,
+        });
+        return textResult(result);
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+
+    async steer(args: z.infer<typeof SteerSchema>) {
+      try {
+        const provider = providers.get(args.provider);
+        if (!provider.steer) {
+          return errorResult(`steer not supported for ${args.provider}`);
+        }
+        const result = await provider.steer(args.session_id, args.text);
+        return textResult(result);
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+
+    async list_approvals(args: z.infer<typeof ListApprovalsSchema>) {
+      try {
+        const provider = providers.get(args.provider);
+        if (!provider.listApprovals) {
+          return errorResult(`list_approvals not supported for ${args.provider}`);
+        }
+        const result = await provider.listApprovals(args.session_id);
+        return textResult(result);
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+
+    async resolve_approval(args: z.infer<typeof ResolveApprovalSchema>) {
+      try {
+        const provider = providers.get(args.provider);
+        if (!provider.resolveApproval) {
+          return errorResult(`resolve_approval not supported for ${args.provider}`);
+        }
+        const result = await provider.resolveApproval(
+          args.session_id,
+          args.approval_id,
+          args.decision,
+        );
         return textResult(result);
       } catch (err) {
         return errorResult(err);

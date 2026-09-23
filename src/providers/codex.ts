@@ -18,14 +18,22 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import type {
+  Approval,
+  ApprovalDecision,
+  ApprovalKind,
   CreateSessionResult,
   InterruptResult,
+  ListApprovalsResult,
+  ResolveApprovalResult,
   SendMessageResult,
   SessionDetail,
   SessionProvider,
   SessionSummary,
+  SteerResult,
   Transcript,
   TranscriptItem,
+  WaitTurnOptions,
+  WaitTurnResult,
 } from './types.js';
 
 type JsonRpcId = number;
@@ -33,6 +41,10 @@ type Pending = {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
 };
+
+interface MockApproval extends Approval {
+  jsonRpcId?: number;
+}
 
 interface MockSession {
   id: string;
@@ -43,10 +55,25 @@ interface MockSession {
   updatedAt: number;
   items: TranscriptItem[];
   activeTurnId?: string;
+  turnStartedAt?: number;
+  pendingApprovals: MockApproval[];
 }
 
 function useMock(): boolean {
   return process.env.CODEX_MOCK === '1' || process.env.CODEX_MOCK === 'true';
+}
+
+interface PendingApproval {
+  requestId: JsonRpcId;
+  approval: Approval;
+}
+
+interface TurnState {
+  turnId: string;
+  status: 'inProgress' | 'completed' | 'interrupted' | 'failed';
+  latestMessage?: string;
+  error?: string;
+  completedAt?: number;
 }
 
 export class CodexProvider implements SessionProvider {
@@ -56,6 +83,8 @@ export class CodexProvider implements SessionProvider {
   private nextId = 1;
   private pending = new Map<JsonRpcId, Pending>();
   private activeTurns = new Map<string, string>(); // threadId -> turnId
+  private turnStates = new Map<string, TurnState>(); // threadId -> TurnState
+  private pendingApprovals = new Map<string, PendingApproval[]>(); // threadId -> approvals
   private ready: Promise<void> | null = null;
 
   constructor() {
@@ -79,6 +108,7 @@ export class CodexProvider implements SessionProvider {
       createdAt: now,
       updatedAt: now,
       items: [],
+      pendingApprovals: [],
     };
     this.mockSessions.set(s.id, s);
     return s;
@@ -181,16 +211,43 @@ export class CodexProvider implements SessionProvider {
       if (!s) throw new Error(`Unknown mock session: ${sessionId}`);
       const turnId = `turn_mock_${randomUUID().slice(0, 8)}`;
       s.activeTurnId = turnId;
+      s.turnStartedAt = Date.now();
       s.items.push({ role: 'user', text, turnId });
-      s.items.push({
-        role: 'assistant',
-        text: `[mock] Received: ${text}`,
-        turnId,
-      });
-      s.preview = text.slice(0, 80);
-      s.updatedAt = Date.now();
-      s.activeTurnId = undefined;
-      return { sessionId, turnId, status: 'completed' };
+      
+      // Simulate approval request if message contains "sudo" or "rm"
+      const needsApproval = /\b(sudo|rm\s+-rf?)\b/i.test(text);
+      if (needsApproval) {
+        const approval: MockApproval = {
+          id: `appr_mock_${randomUUID().slice(0, 8)}`,
+          sessionId,
+          turnId,
+          kind: 'command',
+          command: text,
+          cwd: s.cwd,
+          reason: 'Command requires approval',
+          requestedAt: Date.now(),
+        };
+        s.pendingApprovals.push(approval);
+        // Turn stays in progress waiting for approval
+        return { sessionId, turnId, status: 'inProgress' };
+      }
+      
+      // Simulate async turn completion
+      setTimeout(() => {
+        if (s.activeTurnId === turnId) {
+          s.items.push({
+            role: 'assistant',
+            text: `[mock] Received: ${text}`,
+            turnId,
+          });
+          s.preview = text.slice(0, 80);
+          s.updatedAt = Date.now();
+          s.activeTurnId = undefined;
+          s.turnStartedAt = undefined;
+        }
+      }, 50);
+      
+      return { sessionId, turnId, status: 'inProgress' };
     }
 
     await this.ensureConnected();
@@ -273,6 +330,267 @@ export class CodexProvider implements SessionProvider {
     }
 
     return { sessionId, provider: 'codex', cwd: opts?.cwd };
+  }
+
+  async waitTurn(sessionId: string, opts?: WaitTurnOptions): Promise<WaitTurnResult> {
+    const timeoutMs = opts?.timeoutMs ?? 60_000;
+    const pollIntervalMs = opts?.pollIntervalMs ?? 500;
+
+    if (useMock()) {
+      const s = this.mockSessions.get(sessionId);
+      if (!s) throw new Error(`Unknown mock session: ${sessionId}`);
+
+      // No active turn
+      if (!s.activeTurnId) {
+        const lastAssistant = [...s.items].reverse().find((i) => i.role === 'assistant');
+        return {
+          sessionId,
+          status: 'idle',
+          latestMessage: lastAssistant?.text?.slice(0, 200),
+        };
+      }
+
+      // If there are pending approvals, return waiting status
+      if (s.pendingApprovals.length > 0) {
+        return {
+          sessionId,
+          turnId: s.activeTurnId,
+          status: 'inProgress' as WaitTurnResult['status'],
+          latestMessage: `Waiting for ${s.pendingApprovals.length} approval(s)`,
+        };
+      }
+
+      const turnId = s.activeTurnId;
+      const startTime = Date.now();
+
+      // Poll until turn completes or timeout
+      while (Date.now() - startTime < timeoutMs) {
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+        
+        if (!s.activeTurnId || s.activeTurnId !== turnId) {
+          // Turn completed
+          const lastAssistant = [...s.items]
+            .reverse()
+            .find((i) => i.role === 'assistant' && i.turnId === turnId);
+          return {
+            sessionId,
+            turnId,
+            status: 'completed',
+            latestMessage: lastAssistant?.text?.slice(0, 200),
+          };
+        }
+
+        // Check for pending approvals
+        if (s.pendingApprovals.length > 0) {
+          return {
+            sessionId,
+            turnId,
+            status: 'inProgress' as WaitTurnResult['status'],
+            latestMessage: `Waiting for ${s.pendingApprovals.length} approval(s)`,
+          };
+        }
+      }
+
+      return { sessionId, turnId, status: 'timeout' };
+    }
+
+    // Real mode: poll turn state
+    const turnId = this.activeTurns.get(sessionId);
+    if (!turnId) {
+      return { sessionId, status: 'idle' };
+    }
+
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeoutMs) {
+      const state = this.turnStates.get(sessionId);
+      if (state && state.turnId === turnId) {
+        if (state.status !== 'inProgress') {
+          return {
+            sessionId,
+            turnId,
+            status: state.status,
+            latestMessage: state.latestMessage?.slice(0, 200),
+            error: state.error,
+          };
+        }
+      }
+
+      // Check for pending approvals
+      const approvals = this.pendingApprovals.get(sessionId) ?? [];
+      if (approvals.length > 0) {
+        return {
+          sessionId,
+          turnId,
+          status: 'inProgress' as WaitTurnResult['status'],
+          latestMessage: `Waiting for ${approvals.length} approval(s)`,
+        };
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    }
+
+    return { sessionId, turnId, status: 'timeout' };
+  }
+
+  async steer(sessionId: string, text: string): Promise<SteerResult> {
+    if (useMock()) {
+      const s = this.mockSessions.get(sessionId);
+      if (!s) throw new Error(`Unknown mock session: ${sessionId}`);
+
+      if (!s.activeTurnId) {
+        return {
+          sessionId,
+          accepted: false,
+          error: 'No active turn to steer. Use send_message to start a turn first.',
+        };
+      }
+
+      // Add steering input to the turn
+      s.items.push({ role: 'user', text: `[steer] ${text}`, turnId: s.activeTurnId });
+      return { sessionId, turnId: s.activeTurnId, accepted: true };
+    }
+
+    // Real mode: call turn/steer
+    await this.ensureConnected();
+    const turnId = this.activeTurns.get(sessionId);
+    if (!turnId) {
+      return {
+        sessionId,
+        accepted: false,
+        error: 'No active turn to steer. Use send_message to start a turn first.',
+      };
+    }
+
+    try {
+      const result = (await this.request('turn/steer', {
+        threadId: sessionId,
+        input: [{ type: 'text', text }],
+      })) as { turnId?: string };
+
+      return {
+        sessionId,
+        turnId: result.turnId ?? turnId,
+        accepted: true,
+      };
+    } catch (err) {
+      return {
+        sessionId,
+        turnId,
+        accepted: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  async listApprovals(sessionId: string): Promise<ListApprovalsResult> {
+    if (useMock()) {
+      const s = this.mockSessions.get(sessionId);
+      if (!s) throw new Error(`Unknown mock session: ${sessionId}`);
+      return { sessionId, approvals: [...s.pendingApprovals] };
+    }
+
+    // Real mode: return tracked pending approvals
+    const approvals = this.pendingApprovals.get(sessionId) ?? [];
+    return {
+      sessionId,
+      approvals: approvals.map((p) => p.approval),
+    };
+  }
+
+  async resolveApproval(
+    sessionId: string,
+    approvalId: string,
+    decision: ApprovalDecision,
+  ): Promise<ResolveApprovalResult> {
+    if (useMock()) {
+      const s = this.mockSessions.get(sessionId);
+      if (!s) throw new Error(`Unknown mock session: ${sessionId}`);
+
+      const idx = s.pendingApprovals.findIndex((a) => a.id === approvalId);
+      if (idx === -1) {
+        return {
+          sessionId,
+          approvalId,
+          resolved: false,
+          error: `Approval not found: ${approvalId}`,
+        };
+      }
+
+      const approval = s.pendingApprovals[idx];
+      s.pendingApprovals.splice(idx, 1);
+
+      // Add result to transcript
+      const turnId = approval.turnId;
+      if (decision === 'accept' || decision === 'acceptForSession') {
+        s.items.push({
+          role: 'system',
+          text: `[mock] Approval ${approvalId} accepted`,
+          turnId,
+        });
+
+        // Complete the turn after approval if no more pending
+        if (s.pendingApprovals.length === 0 && s.activeTurnId) {
+          setTimeout(() => {
+            if (s.activeTurnId === turnId) {
+              s.items.push({
+                role: 'assistant',
+                text: `[mock] Command executed after approval`,
+                turnId,
+              });
+              s.updatedAt = Date.now();
+              s.activeTurnId = undefined;
+              s.turnStartedAt = undefined;
+            }
+          }, 30);
+        }
+      } else {
+        s.items.push({
+          role: 'system',
+          text: `[mock] Approval ${approvalId} ${decision}d`,
+          turnId,
+        });
+        // Turn ends on decline/cancel
+        s.activeTurnId = undefined;
+        s.turnStartedAt = undefined;
+      }
+
+      return { sessionId, approvalId, resolved: true, decision };
+    }
+
+    // Real mode: respond to the JSON-RPC request
+    const approvals = this.pendingApprovals.get(sessionId);
+    if (!approvals) {
+      return {
+        sessionId,
+        approvalId,
+        resolved: false,
+        error: `No pending approvals for session: ${sessionId}`,
+      };
+    }
+
+    const idx = approvals.findIndex((p) => p.approval.id === approvalId);
+    if (idx === -1) {
+      return {
+        sessionId,
+        approvalId,
+        resolved: false,
+        error: `Approval not found: ${approvalId}`,
+      };
+    }
+
+    const pending = approvals[idx];
+    approvals.splice(idx, 1);
+
+    // Send response to the JSON-RPC request
+    if (this.proc?.stdin.writable) {
+      const response = {
+        id: pending.requestId,
+        result: { decision },
+      };
+      this.proc.stdin.write(`${JSON.stringify(response)}\n`);
+    }
+
+    return { sessionId, approvalId, resolved: true, decision };
   }
 
   async close(): Promise<void> {
@@ -367,13 +685,89 @@ export class CodexProvider implements SessionProvider {
       return;
     }
 
-    // Track turn ids from notifications when present.
+    // Track turn lifecycle from notifications.
     if (msg.method === 'turn/started') {
       const params = msg.params as { turn?: { id?: string }; threadId?: string } | undefined;
-      // Some builds nest threadId differently; best-effort.
       const turnId = params?.turn?.id;
       const threadId = (params as { threadId?: string } | undefined)?.threadId;
-      if (threadId && turnId) this.activeTurns.set(threadId, turnId);
+      if (threadId && turnId) {
+        this.activeTurns.set(threadId, turnId);
+        this.turnStates.set(threadId, { turnId, status: 'inProgress' });
+      }
+    }
+
+    if (msg.method === 'turn/completed') {
+      const params = msg.params as {
+        turn?: { id?: string; status?: string; error?: { message?: string } };
+        threadId?: string;
+      } | undefined;
+      const threadId = (params as { threadId?: string } | undefined)?.threadId;
+      const turnId = params?.turn?.id;
+      const status = params?.turn?.status as 'completed' | 'interrupted' | 'failed' | undefined;
+      const errorMsg = params?.turn?.error?.message;
+      if (threadId && turnId) {
+        this.activeTurns.delete(threadId);
+        this.turnStates.set(threadId, {
+          turnId,
+          status: status ?? 'completed',
+          error: errorMsg,
+          completedAt: Date.now(),
+        });
+      }
+    }
+
+    // Handle server-initiated approval requests
+    if (
+      msg.method === 'item/commandExecution/requestApproval' ||
+      msg.method === 'item/fileChange/requestApproval'
+    ) {
+      const requestId = msg.id as JsonRpcId;
+      const params = msg.params as {
+        threadId?: string;
+        turnId?: string;
+        itemId?: string;
+        command?: string;
+        cwd?: string;
+        reason?: string;
+        kind?: string;
+      } | undefined;
+
+      if (params?.threadId && requestId !== undefined && requestId !== null) {
+        const kind: ApprovalKind = msg.method.includes('fileChange')
+          ? 'fileChange'
+          : (params.kind as ApprovalKind) ?? 'command';
+
+        const approval: Approval = {
+          id: `appr_${requestId}_${Date.now()}`,
+          sessionId: params.threadId,
+          turnId: params.turnId,
+          itemId: params.itemId,
+          kind,
+          command: params.command,
+          cwd: params.cwd,
+          reason: params.reason,
+          requestedAt: Date.now(),
+        };
+
+        const list = this.pendingApprovals.get(params.threadId) ?? [];
+        list.push({ requestId, approval });
+        this.pendingApprovals.set(params.threadId, list);
+      }
+      return; // Don't process as regular request/response
+    }
+
+    // Handle serverRequest/resolved to clean up approvals
+    if (msg.method === 'serverRequest/resolved') {
+      const params = msg.params as { threadId?: string; requestId?: JsonRpcId } | undefined;
+      if (params?.threadId && params.requestId !== undefined) {
+        const list = this.pendingApprovals.get(params.threadId);
+        if (list) {
+          const idx = list.findIndex((p) => p.requestId === params.requestId);
+          if (idx !== -1) {
+            list.splice(idx, 1);
+          }
+        }
+      }
     }
 
     if (msg.id === undefined || msg.id === null) return; // notification

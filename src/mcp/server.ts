@@ -16,6 +16,11 @@ import {
   InterruptSchema,
   CreateSessionSchema,
   GetSessionSchema,
+  WaitTurnSchema,
+  SteerSchema,
+  ListApprovalsSchema,
+  ResolveApprovalSchema,
+  ApprovalDecisionSchema,
 } from './tools.js';
 import { bearerAuth } from './auth.js';
 import { createProviders } from '../providers/index.js';
@@ -149,6 +154,66 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
         },
       },
       async (args) => handlers.get_session(GetSessionSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'wait_turn',
+      {
+        description:
+          'Wait for an active Codex turn to complete, fail, be interrupted, or timeout. ' +
+          'Returns status and latest message snippet. Use instead of polling read_transcript.',
+        inputSchema: {
+          provider: z.literal('codex'),
+          session_id: z.string(),
+          timeout_ms: z.number().int().positive().max(300_000).optional(),
+          poll_interval_ms: z.number().int().positive().max(10_000).optional(),
+        },
+      },
+      async (args) => handlers.wait_turn(WaitTurnSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'steer',
+      {
+        description:
+          'Add guidance to an in-flight Codex turn without starting a new turn. ' +
+          'Use this to provide mid-turn input like follow-up instructions or clarifications.',
+        inputSchema: {
+          provider: z.literal('codex'),
+          session_id: z.string(),
+          text: z.string(),
+        },
+      },
+      async (args) => handlers.steer(SteerSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'list_approvals',
+      {
+        description:
+          'List pending approval requests for a Codex session. ' +
+          'Approvals are required for sandbox commands, file changes, or network access.',
+        inputSchema: {
+          provider: z.literal('codex'),
+          session_id: z.string(),
+        },
+      },
+      async (args) => handlers.list_approvals(ListApprovalsSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'resolve_approval',
+      {
+        description:
+          'Resolve a pending Codex approval request. Decisions: accept, acceptForSession, decline, cancel.',
+        inputSchema: {
+          provider: z.literal('codex'),
+          session_id: z.string(),
+          approval_id: z.string(),
+          decision: ApprovalDecisionSchema,
+        },
+      },
+      async (args) => handlers.resolve_approval(ResolveApprovalSchema.parse(args)),
     );
 
     return server;
