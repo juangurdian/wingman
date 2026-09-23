@@ -27,13 +27,17 @@ import type {
   TranscriptItem,
 } from './types.js';
 
-interface WingmanRegistryEntry {
-  id: string;
-  cwd?: string;
+interface WingmanClaudeSession {
+  sessionId: string;
+  cwd: string;
   name?: string;
   preview?: string;
-  createdAt?: number;
-  updatedAt?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface SessionRegistry {
+  sessions: WingmanClaudeSession[];
 }
 
 interface MockDiscoveredSession {
@@ -70,103 +74,147 @@ function registryPath(): string {
   return join(homedir(), '.wingman', 'claude-sessions.json');
 }
 
-function loadRegistry(): WingmanRegistryEntry[] {
+function loadRegistry(): SessionRegistry {
   const path = registryPath();
-  if (!existsSync(path)) return [];
+  if (!existsSync(path)) return { sessions: [] };
   try {
-    const data = JSON.parse(readFileSync(path, 'utf8'));
-    return Array.isArray(data) ? data : [];
+    return JSON.parse(readFileSync(path, 'utf8')) as SessionRegistry;
   } catch {
-    return [];
+    return { sessions: [] };
   }
 }
 
-function saveRegistry(entries: WingmanRegistryEntry[]): void {
-  const path = registryPath();
+function saveRegistry(registry: SessionRegistry): void {
   const dir = join(homedir(), '.wingman');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify(entries, null, 2), { encoding: 'utf8', mode: 0o600 });
+  writeFileSync(registryPath(), `${JSON.stringify(registry, null, 2)}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
 }
 
-function upsertRegistry(entry: WingmanRegistryEntry): void {
-  const entries = loadRegistry();
-  const idx = entries.findIndex((e) => e.id === entry.id);
+function registerSession(session: WingmanClaudeSession): void {
+  const registry = loadRegistry();
+  const idx = registry.sessions.findIndex((s) => s.sessionId === session.sessionId);
   if (idx >= 0) {
-    entries[idx] = { ...entries[idx], ...entry, updatedAt: Date.now() };
+    registry.sessions[idx] = session;
   } else {
-    entries.push({ ...entry, createdAt: entry.createdAt ?? Date.now(), updatedAt: Date.now() });
+    registry.sessions.push(session);
   }
-  saveRegistry(entries);
+  saveRegistry(registry);
+}
+
+function updateSessionTimestamp(sessionId: string): void {
+  const registry = loadRegistry();
+  const session = registry.sessions.find((s) => s.sessionId === sessionId);
+  if (session) {
+    session.updatedAt = Date.now();
+    saveRegistry(registry);
+  }
 }
 
 export class ClaudeProvider implements SessionProvider {
   readonly name = 'claude' as const;
 
+  private mockSessions = new Map<string, MockDiscoveredSession>();
   private mockDiscovered = new Map<string, MockDiscoveredSession>();
 
   constructor() {
     if (useMock()) {
-      this.seedMockDiscovered();
+      this.seedMockSessions();
     }
   }
 
-  private seedMockDiscovered(): void {
+  private seedMockSessions(): void {
     const now = Date.now();
-    const s1: MockDiscoveredSession = {
-      id: `sess_discovered_${randomUUID().slice(0, 8)}`,
-      cwd: '/home/user/projects/alpha',
-      name: 'Discovered: Alpha Project',
-      preview: 'Help me refactor the auth module',
-      firstPrompt: 'Help me refactor the auth module',
-      gitBranch: 'main',
-      tag: 'refactor',
-      createdAt: now - 3600000,
-      updatedAt: now - 1800000,
+
+    const wingmanDemo: MockDiscoveredSession = {
+      id: `claude_mock_${randomUUID().slice(0, 8)}`,
+      cwd: process.cwd(),
+      name: 'mock-claude-demo',
+      preview: 'Hello from mock Claude',
+      createdAt: now,
+      updatedAt: now,
       items: [
-        { role: 'user', text: 'Help me refactor the auth module', turnId: 'turn_disc_1' },
-        { role: 'assistant', text: '[mock discovered] I can help with the auth module refactor.', turnId: 'turn_disc_1' },
+        { role: 'user', text: 'Hello from mock Claude', turnId: 'turn_mock_1' },
+        {
+          role: 'assistant',
+          text: 'Mock Claude ready. Set CLAUDE_MOCK=0 and install Claude Code for real mode.',
+          turnId: 'turn_mock_1',
+        },
       ],
     };
-    const s2: MockDiscoveredSession = {
-      id: `sess_discovered_${randomUUID().slice(0, 8)}`,
-      cwd: '/home/user/projects/beta',
-      name: 'Discovered: Beta Tests',
-      preview: 'Run the test suite',
-      firstPrompt: 'Run the test suite and fix failures',
-      gitBranch: 'feature/tests',
-      createdAt: now - 7200000,
-      updatedAt: now - 3600000,
-      items: [
-        { role: 'user', text: 'Run the test suite and fix failures', turnId: 'turn_disc_2' },
-        { role: 'assistant', text: '[mock discovered] Running tests...', turnId: 'turn_disc_2' },
-      ],
+    this.mockSessions.set(wingmanDemo.id, wingmanDemo);
+
+    if (discoveryEnabled()) {
+      const disc1: MockDiscoveredSession = {
+        id: `sess_discovered_${randomUUID().slice(0, 8)}`,
+        cwd: '/home/user/projects/alpha',
+        name: 'Discovered: Alpha Project',
+        preview: 'Help me refactor the auth module',
+        firstPrompt: 'Help me refactor the auth module',
+        gitBranch: 'main',
+        tag: 'refactor',
+        createdAt: now - 3600000,
+        updatedAt: now - 1800000,
+        items: [
+          { role: 'user', text: 'Help me refactor the auth module', turnId: 'turn_disc_1' },
+          { role: 'assistant', text: '[mock discovered] I can help with the auth module refactor.', turnId: 'turn_disc_1' },
+        ],
+      };
+      const disc2: MockDiscoveredSession = {
+        id: `sess_discovered_${randomUUID().slice(0, 8)}`,
+        cwd: '/home/user/projects/beta',
+        name: 'Discovered: Beta Tests',
+        preview: 'Run the test suite',
+        firstPrompt: 'Run the test suite and fix failures',
+        gitBranch: 'feature/tests',
+        createdAt: now - 7200000,
+        updatedAt: now - 3600000,
+        items: [
+          { role: 'user', text: 'Run the test suite and fix failures', turnId: 'turn_disc_2' },
+          { role: 'assistant', text: '[mock discovered] Running tests...', turnId: 'turn_disc_2' },
+        ],
+      };
+      this.mockDiscovered.set(disc1.id, disc1);
+      this.mockDiscovered.set(disc2.id, disc2);
+    }
+  }
+
+  private seedMock(opts?: { cwd?: string; name?: string; preview?: string }): MockDiscoveredSession {
+    const now = Date.now();
+    const s: MockDiscoveredSession = {
+      id: `claude_mock_${randomUUID().slice(0, 8)}`,
+      cwd: opts?.cwd ?? process.cwd(),
+      name: opts?.name,
+      preview: opts?.preview,
+      createdAt: now,
+      updatedAt: now,
+      items: [],
     };
-    this.mockDiscovered.set(s1.id, s1);
-    this.mockDiscovered.set(s2.id, s2);
+    this.mockSessions.set(s.id, s);
+    return s;
   }
 
   async listSessions(): Promise<SessionSummary[]> {
-    const wingmanEntries = loadRegistry();
-    const wingmanSessions: SessionSummary[] = wingmanEntries.map((e) => ({
-      id: e.id,
-      provider: 'claude' as const,
-      cwd: e.cwd,
-      name: e.name,
-      preview: e.preview,
-      status: 'idle',
-      createdAt: e.createdAt,
-      updatedAt: e.updatedAt,
-      source: 'wingman' as const,
-    }));
-
-    if (!discoveryEnabled()) {
-      return wingmanSessions;
-    }
-
-    let discovered: SessionSummary[] = [];
-
     if (useMock()) {
-      discovered = [...this.mockDiscovered.values()].map((s) => ({
+      const wingmanSessions: SessionSummary[] = [...this.mockSessions.values()].map((s) => ({
+        id: s.id,
+        provider: 'claude' as const,
+        cwd: s.cwd,
+        name: s.name,
+        preview: s.preview,
+        status: s.activeTurnId ? 'active' : 'idle',
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+        source: 'wingman' as const,
+      }));
+
+      if (!discoveryEnabled()) {
+        return wingmanSessions;
+      }
+
+      const discovered: SessionSummary[] = [...this.mockDiscovered.values()].map((s) => ({
         id: s.id,
         provider: 'claude' as const,
         cwd: s.cwd,
@@ -179,9 +227,37 @@ export class ClaudeProvider implements SessionProvider {
         gitBranch: s.gitBranch,
         tag: s.tag,
       }));
-    } else {
-      discovered = await this.discoverViaSdk();
+
+      const wingmanIds = new Set(wingmanSessions.map((s) => s.id));
+      const merged = [...wingmanSessions];
+      for (const ds of discovered) {
+        if (!wingmanIds.has(ds.id)) {
+          merged.push(ds);
+        }
+      }
+
+      merged.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+      return merged;
     }
+
+    const registry = loadRegistry();
+    const wingmanSessions: SessionSummary[] = registry.sessions.map((reg) => ({
+      id: reg.sessionId,
+      provider: 'claude' as const,
+      cwd: reg.cwd,
+      name: reg.name,
+      preview: reg.preview,
+      status: 'idle',
+      createdAt: reg.createdAt,
+      updatedAt: reg.updatedAt,
+      source: 'wingman' as const,
+    }));
+
+    if (!discoveryEnabled()) {
+      return wingmanSessions;
+    }
+
+    const discovered = await this.discoverViaSdk();
 
     const wingmanIds = new Set(wingmanSessions.map((s) => s.id));
     const merged = [...wingmanSessions];
@@ -240,7 +316,7 @@ export class ClaudeProvider implements SessionProvider {
 
   async readTranscript(sessionId: string, limit = 50): Promise<Transcript> {
     if (useMock()) {
-      const mock = this.mockDiscovered.get(sessionId);
+      const mock = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
       if (mock) {
         return {
           sessionId,
@@ -252,8 +328,8 @@ export class ClaudeProvider implements SessionProvider {
     }
 
     const registry = loadRegistry();
-    const entry = registry.find((e) => e.id === sessionId);
-    const cwd = entry?.cwd;
+    const session = registry.sessions.find((s) => s.sessionId === sessionId);
+    const cwd = session?.cwd;
 
     try {
       const sdk = await import('@anthropic-ai/claude-agent-sdk');
@@ -279,7 +355,7 @@ export class ClaudeProvider implements SessionProvider {
 
   async sendMessage(sessionId: string, text: string): Promise<SendMessageResult> {
     if (useMock()) {
-      const mock = this.mockDiscovered.get(sessionId);
+      const mock = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
       if (mock) {
         const turnId = `turn_mock_${randomUUID().slice(0, 8)}`;
         mock.activeTurnId = turnId;
@@ -298,7 +374,7 @@ export class ClaudeProvider implements SessionProvider {
     }
 
     const registry = loadRegistry();
-    const entry = registry.find((e) => e.id === sessionId);
+    const session = registry.sessions.find((s) => s.sessionId === sessionId);
 
     try {
       const sdk = await import('@anthropic-ai/claude-agent-sdk');
@@ -310,7 +386,7 @@ export class ClaudeProvider implements SessionProvider {
         prompt: text,
         options: {
           resume: sessionId,
-          cwd: entry?.cwd,
+          cwd: session?.cwd,
           maxTurns: 1,
         },
       });
@@ -323,18 +399,20 @@ export class ClaudeProvider implements SessionProvider {
         }
       }
 
-      if (!entry) {
+      if (!session) {
         const info = await sdk.getSessionInfo(sessionId);
         if (info) {
-          upsertRegistry({
-            id: sessionId,
-            cwd: info.cwd,
+          registerSession({
+            sessionId,
+            cwd: info.cwd ?? process.cwd(),
             name: info.customTitle ?? info.summary,
             preview: text.slice(0, 80),
+            createdAt: info.createdAt ?? Date.now(),
+            updatedAt: Date.now(),
           });
         }
       } else {
-        upsertRegistry({ ...entry, preview: text.slice(0, 80) });
+        updateSessionTimestamp(sessionId);
       }
 
       return { sessionId, turnId, status };
@@ -346,7 +424,7 @@ export class ClaudeProvider implements SessionProvider {
 
   async interrupt(sessionId: string): Promise<InterruptResult> {
     if (useMock()) {
-      const mock = this.mockDiscovered.get(sessionId);
+      const mock = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
       if (mock) {
         const turnId = mock.activeTurnId;
         mock.activeTurnId = undefined;
@@ -368,26 +446,10 @@ export class ClaudeProvider implements SessionProvider {
 
   async createSession(opts?: { cwd?: string; prompt?: string }): Promise<CreateSessionResult> {
     if (useMock()) {
-      const now = Date.now();
-      const s: MockDiscoveredSession = {
-        id: `sess_wingman_${randomUUID().slice(0, 8)}`,
+      const s = this.seedMock({
         cwd: opts?.cwd ?? process.cwd(),
-        name: 'Wingman Created',
+        name: 'mock-claude-created',
         preview: opts?.prompt?.slice(0, 80),
-        firstPrompt: opts?.prompt,
-        createdAt: now,
-        updatedAt: now,
-        items: [],
-      };
-      this.mockDiscovered.set(s.id, s);
-
-      upsertRegistry({
-        id: s.id,
-        cwd: s.cwd,
-        name: s.name,
-        preview: s.preview,
-        createdAt: s.createdAt,
-        updatedAt: s.updatedAt,
       });
 
       if (opts?.prompt) {
@@ -422,11 +484,14 @@ export class ClaudeProvider implements SessionProvider {
         }
       }
 
-      upsertRegistry({
-        id: resultSessionId,
-        cwd: opts?.cwd,
-        name: 'Wingman Session',
+      const now = Date.now();
+      registerSession({
+        sessionId: resultSessionId,
+        cwd: opts?.cwd ?? process.cwd(),
+        name: opts?.prompt?.slice(0, 40) || 'Wingman session',
         preview: opts?.prompt?.slice(0, 80),
+        createdAt: now,
+        updatedAt: now,
       });
 
       return { sessionId: resultSessionId, provider: 'claude', cwd: opts?.cwd };
