@@ -44,6 +44,7 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | Tests | ✅ | Unit tests for all new features |
 | ROADMAP + README polish | ✅ | Clear positioning; SDK resume ≠ TTY typing |
 | Codex wait/steer/approvals | ✅ | `wait_turn`, `steer`, `list_approvals`, `resolve_approval` tools; mock coverage |
+| Claude wait_turn parity | ✅ | `wait_turn` for Claude sessions; soft stubs for steer/approvals with clear errors |
 
 ### Next
 

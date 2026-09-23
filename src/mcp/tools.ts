@@ -36,27 +36,27 @@ export const GetSessionSchema = z.object({
 });
 
 export const WaitTurnSchema = z.object({
-  provider: z.literal('codex'),
+  provider: ProviderSchema,
   session_id: z.string().min(1),
   timeout_ms: z.number().int().positive().max(300_000).optional(),
   poll_interval_ms: z.number().int().positive().max(10_000).optional(),
 });
 
 export const SteerSchema = z.object({
-  provider: z.literal('codex'),
+  provider: ProviderSchema,
   session_id: z.string().min(1),
   text: z.string().min(1),
 });
 
 export const ListApprovalsSchema = z.object({
-  provider: z.literal('codex'),
+  provider: ProviderSchema,
   session_id: z.string().min(1),
 });
 
 export const ApprovalDecisionSchema = z.enum(['accept', 'acceptForSession', 'decline', 'cancel']);
 
 export const ResolveApprovalSchema = z.object({
-  provider: z.literal('codex'),
+  provider: ProviderSchema,
   session_id: z.string().min(1),
   approval_id: z.string().min(1),
   decision: ApprovalDecisionSchema,

@@ -144,10 +144,10 @@ flowchart LR
 | `send_message` | `provider`, `session_id`, `text` | Codex: `turn/start`; Claude: returns `accepted` quickly, turn runs async |
 | `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`; Claude: works when Wingman owns the active turn |
 | `create_session` | `provider`, `cwd?`, `prompt?` | Codex: `thread/start`; Claude: new session with optional initial prompt (async) |
-| `wait_turn` | `provider: codex`, `session_id`, `timeout_ms?`, `poll_interval_ms?` | Wait for turn to complete/fail/timeout; returns status + message snippet |
-| `steer` | `provider: codex`, `session_id`, `text` | Add guidance to in-flight turn via `turn/steer` |
-| `list_approvals` | `provider: codex`, `session_id` | List pending sandbox/command approvals |
-| `resolve_approval` | `provider: codex`, `session_id`, `approval_id`, `decision` | Resolve approval: `accept` \| `acceptForSession` \| `decline` \| `cancel` |
+| `wait_turn` | `provider`, `session_id`, `timeout_ms?`, `poll_interval_ms?` | Wait for turn to complete/fail/timeout; returns status + message snippet |
+| `steer` | `provider`, `session_id`, `text` | Add guidance to in-flight turn (Codex only; Claude returns unsupported) |
+| `list_approvals` | `provider`, `session_id` | List pending approvals (Codex); Claude returns empty array |
+| `resolve_approval` | `provider`, `session_id`, `approval_id`, `decision` | Resolve approval (Codex); Claude returns unsupported error |
 
 ### create_session behavior
 
@@ -171,20 +171,36 @@ For **Claude sessions**, `interrupt` works reliably when Wingman owns the active
 
 For **Codex sessions**, `interrupt` requires a known active `turnId` tracked from `turn/started` notifications.
 
-### Codex wait/steer/approvals (Codex-only)
+### wait_turn (both providers)
 
-These tools provide deeper integration with Codex app-server for long-running turns:
+**wait_turn** provides long-poll waiting instead of busy-polling `read_transcript`. Works for both Codex and Claude sessions.
 
-**wait_turn**: Long-poll instead of busy-polling `read_transcript`. Returns when the turn completes, fails, is interrupted, times out, or when approvals are pending. Example response:
+For **Claude sessions**, `wait_turn` polls `activeTurns` until the turn completes, times out, or the session becomes idle. This is essential for real Claude cold starts which can take 1-3+ minutes — use `wait_turn` to avoid MCP HTTP timeouts.
+
+Example Claude workflow:
+```
+1. create_session(prompt: "Build a web scraper")  →  { status: "accepted", turnId: "turn_1" }
+2. wait_turn(timeout_ms: 180000)                  →  { status: "completed", latestMessage: "I've created..." }
+```
+
+For **Codex sessions**, `wait_turn` returns when the turn completes, fails, is interrupted, times out, or when approvals are pending.
+
+Example response:
 ```json
 { "sessionId": "thr_123", "turnId": "turn_456", "status": "completed", "latestMessage": "Done!" }
 ```
 
-**steer**: Add mid-turn guidance without starting a new turn. Useful for follow-up instructions or clarifications while Codex is working. Uses Codex's `turn/steer` API.
+### steer/approvals (Codex-specific, Claude soft stubs)
 
-**list_approvals** + **resolve_approval**: When Codex requires approval for sandbox commands, file changes, or network access, these tools let you surface and resolve those requests programmatically. Approvals are modeled as server-initiated JSON-RPC requests in the Codex protocol.
+**steer**: Add mid-turn guidance without starting a new turn. Uses Codex's `turn/steer` API.
+- **Codex**: Useful for follow-up instructions while Codex is working.
+- **Claude**: Returns `{ accepted: false, error: "Claude does not support mid-turn steering..." }`. Use `interrupt()` + `send_message()` instead.
 
-Example approval flow:
+**list_approvals** + **resolve_approval**: Programmatic approval handling for sandbox commands, file changes, or network access.
+- **Codex**: Full support via JSON-RPC requests.
+- **Claude**: `list_approvals` returns empty array; `resolve_approval` returns unsupported error. Approvals must be handled in the local Claude CLI directly.
+
+Example Codex approval flow:
 ```
 1. send_message("sudo apt update")  →  { status: "inProgress" }
 2. list_approvals()                 →  { approvals: [{ id: "appr_1", kind: "command", command: "sudo apt update" }] }

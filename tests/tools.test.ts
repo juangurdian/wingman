@@ -257,6 +257,33 @@ class MockClaudeEnabled implements SessionProvider {
     if (!session) return null;
     return { ...session, status: this.activeTurnId ? 'running' : 'idle', activeTurnId: this.activeTurnId };
   }
+  async waitTurn(sessionId: string, _opts?: WaitTurnOptions): Promise<WaitTurnResult> {
+    const session = this.sessions.find((s) => s.id === sessionId);
+    if (!session) throw new Error(`Unknown session: ${sessionId}`);
+    if (!this.activeTurnId) {
+      const lastAssistant = [...this.items].reverse().find((i) => i.role === 'assistant');
+      return { sessionId, status: 'idle', latestMessage: lastAssistant?.text?.slice(0, 200) };
+    }
+    return { sessionId, turnId: this.activeTurnId, status: 'completed', latestMessage: '[mock] completed' };
+  }
+  async steer(sessionId: string, _text: string): Promise<SteerResult> {
+    return {
+      sessionId,
+      accepted: false,
+      error: 'Claude does not support mid-turn steering. Use interrupt() then send_message().',
+    };
+  }
+  async listApprovals(sessionId: string): Promise<ListApprovalsResult> {
+    return { sessionId, approvals: [] };
+  }
+  async resolveApproval(sessionId: string, approvalId: string, _decision: ApprovalDecision): Promise<ResolveApprovalResult> {
+    return {
+      sessionId,
+      approvalId,
+      resolved: false,
+      error: 'Claude does not support programmatic approval resolution.',
+    };
+  }
 }
 
 function registry(codex: SessionProvider, claude: SessionProvider): ProviderRegistry {
@@ -867,5 +894,81 @@ describe('tool handlers for Codex wait/steer/approvals', () => {
     
     const body = JSON.parse(res.content[0]!.text);
     expect(body.latestMessage).toMatch(/approval/i);
+  });
+});
+
+describe('tool handlers for Claude wait/steer/approvals parity', () => {
+  let claude: MockClaudeEnabled;
+  let handlers: ReturnType<typeof createToolHandlers>;
+
+  beforeEach(() => {
+    claude = new MockClaudeEnabled();
+    handlers = createToolHandlers(registry(new MockCodex(), claude));
+  });
+
+  it('wait_turn returns idle for Claude session with no active turn', async () => {
+    const res = await handlers.wait_turn({
+      provider: 'claude',
+      session_id: 'claude_test_1',
+    });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.status).toBe('idle');
+    expect(body.sessionId).toBe('claude_test_1');
+  });
+
+  it('wait_turn returns completed with message for Claude session', async () => {
+    // Simulate an active turn
+    claude.activeTurnId = 'turn_test';
+    
+    const res = await handlers.wait_turn({
+      provider: 'claude',
+      session_id: 'claude_test_1',
+    });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.status).toBe('completed');
+    expect(body.latestMessage).toBeDefined();
+  });
+
+  it('steer returns unsupported error for Claude', async () => {
+    const res = await handlers.steer({
+      provider: 'claude',
+      session_id: 'claude_test_1',
+      text: 'guidance',
+    });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.accepted).toBe(false);
+    expect(body.error).toMatch(/claude does not support/i);
+  });
+
+  it('list_approvals returns empty array for Claude', async () => {
+    const res = await handlers.list_approvals({
+      provider: 'claude',
+      session_id: 'claude_test_1',
+    });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessionId).toBe('claude_test_1');
+    expect(body.approvals).toEqual([]);
+  });
+
+  it('resolve_approval returns unsupported error for Claude', async () => {
+    const res = await handlers.resolve_approval({
+      provider: 'claude',
+      session_id: 'claude_test_1',
+      approval_id: 'any_id',
+      decision: 'accept',
+    });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.resolved).toBe(false);
+    expect(body.error).toMatch(/claude does not support/i);
   });
 });

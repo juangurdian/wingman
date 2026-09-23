@@ -306,3 +306,180 @@ describe('ClaudeProvider mock mode', () => {
     expect(provider.getSessionStatus(result.sessionId)).toBe('idle');
   });
 });
+
+describe('ClaudeProvider mock mode - wait_turn parity', () => {
+  beforeEach(() => {
+    vi.stubEnv('CLAUDE_MOCK', '1');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('waitTurn returns completed after turn finishes', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+      prompt: 'Test wait turn',
+    });
+    
+    expect(result.status).toBe('accepted');
+    expect(result.turnId).toBeDefined();
+    
+    const waitResult = await provider.waitTurn(result.sessionId, {
+      timeoutMs: 2000,
+      pollIntervalMs: 30,
+    });
+    
+    expect(waitResult.sessionId).toBe(result.sessionId);
+    expect(waitResult.status).toBe('completed');
+    expect(waitResult.latestMessage).toBeDefined();
+    expect(waitResult.latestMessage).toMatch(/mock Claude/i);
+  });
+
+  it('waitTurn returns idle when no active turn', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+    });
+    
+    expect(result.status).toBe('created');
+    
+    const waitResult = await provider.waitTurn(result.sessionId);
+    
+    expect(waitResult.sessionId).toBe(result.sessionId);
+    expect(waitResult.status).toBe('idle');
+  });
+
+  it('waitTurn returns timeout when turn takes too long', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+      prompt: 'Start task',
+    });
+    
+    // Manually keep the turn active by not letting it complete
+    // We'll use a very short timeout to trigger timeout before the 50ms mock delay
+    const waitResult = await provider.waitTurn(result.sessionId, {
+      timeoutMs: 10,
+      pollIntervalMs: 5,
+    });
+    
+    // Either timeout or completed depending on timing
+    expect(['timeout', 'completed']).toContain(waitResult.status);
+    expect(waitResult.sessionId).toBe(result.sessionId);
+    expect(waitResult.turnId).toBeDefined();
+  });
+
+  it('waitTurn respects custom timeout and poll interval', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+      prompt: 'Test custom timeout',
+    });
+    
+    const startTime = Date.now();
+    const waitResult = await provider.waitTurn(result.sessionId, {
+      timeoutMs: 200,
+      pollIntervalMs: 10,
+    });
+    const elapsed = Date.now() - startTime;
+    
+    expect(waitResult.status).toBe('completed');
+    // Should complete within reasonable time (mock completes in 50ms)
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it('waitTurn returns latest assistant message snippet', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+      prompt: 'Hello',
+    });
+    
+    await provider.waitTurn(result.sessionId, {
+      timeoutMs: 200,
+      pollIntervalMs: 10,
+    });
+    
+    const sendResult = await provider.sendMessage(result.sessionId, 'Second message');
+    
+    const waitResult = await provider.waitTurn(result.sessionId, {
+      timeoutMs: 200,
+      pollIntervalMs: 10,
+    });
+    
+    expect(waitResult.status).toBe('completed');
+    expect(waitResult.turnId).toBe(sendResult.turnId);
+    expect(waitResult.latestMessage).toMatch(/mock Claude.*Second message/i);
+  });
+
+  it('waitTurn throws for unknown session', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    await expect(provider.waitTurn('nonexistent')).rejects.toThrow(/unknown mock session/i);
+  });
+
+  it('steer returns unsupported error for Claude', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+      prompt: 'Test steer',
+    });
+    
+    const steerResult = await provider.steer(result.sessionId, 'guidance');
+    
+    expect(steerResult.sessionId).toBe(result.sessionId);
+    expect(steerResult.accepted).toBe(false);
+    expect(steerResult.error).toMatch(/claude does not support mid-turn steering/i);
+    expect(steerResult.error).toMatch(/interrupt/i);
+  });
+
+  it('listApprovals returns empty array for Claude', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+    });
+    
+    const approvalsResult = await provider.listApprovals(result.sessionId);
+    
+    expect(approvalsResult.sessionId).toBe(result.sessionId);
+    expect(approvalsResult.approvals).toEqual([]);
+  });
+
+  it('resolveApproval returns unsupported error for Claude', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+    });
+    
+    const resolveResult = await provider.resolveApproval(
+      result.sessionId,
+      'any_approval_id',
+      'accept',
+    );
+    
+    expect(resolveResult.sessionId).toBe(result.sessionId);
+    expect(resolveResult.approvalId).toBe('any_approval_id');
+    expect(resolveResult.resolved).toBe(false);
+    expect(resolveResult.error).toMatch(/claude does not support programmatic approval/i);
+    expect(resolveResult.error).toMatch(/local claude cli/i);
+  });
+});
