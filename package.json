@@ -11,6 +11,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/mcp/server.ts",
     "pair": "tsx src/pair.ts",
+    "doctor": "tsx src/doctor.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
