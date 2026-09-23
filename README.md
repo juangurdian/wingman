@@ -162,6 +162,7 @@ flowchart LR
 | `list_approvals` | `provider`, `session_id` | List pending approvals (Codex); Claude returns empty array |
 | `resolve_approval` | `provider`, `session_id`, `approval_id`, `decision` | Resolve approval (Codex); Claude returns unsupported error |
 | `set_session_meta` | `provider`, `session_id`, `name?`, `tags?` | Set session name/tags for easier discovery (Wingman-owned sessions) |
+| `export_transcript` | `provider`, `session_id`, `format`, `limit?` | Export transcript as `markdown` \| `json`; returns content + writes to `~/.wingman/exports/` |
 
 ### create_session behavior
 

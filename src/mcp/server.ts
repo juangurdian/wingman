@@ -22,6 +22,8 @@ import {
   ResolveApprovalSchema,
   ApprovalDecisionSchema,
   SetSessionMetaSchema,
+  ExportTranscriptSchema,
+  ExportFormatSchema,
 } from './tools.js';
 import { bearerAuth } from './auth.js';
 import { createProviders } from '../providers/index.js';
@@ -241,6 +243,21 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
         },
       },
       async (args) => handlers.set_session_meta(SetSessionMetaSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'export_transcript',
+      {
+        description:
+          'Export a session transcript as Markdown or JSON. Returns content inline and writes to ~/.wingman/exports/.',
+        inputSchema: {
+          provider: z.enum(['codex', 'claude']),
+          session_id: z.string(),
+          format: ExportFormatSchema,
+          limit: z.number().int().positive().max(500).optional(),
+        },
+      },
+      async (args) => handlers.export_transcript(ExportTranscriptSchema.parse(args)),
     );
 
     return server;

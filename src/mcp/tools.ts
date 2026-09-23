@@ -1,7 +1,12 @@
 import { z } from 'zod';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { ProviderRegistry, ProviderName } from '../providers/index.js';
+import type { Transcript, TranscriptItem } from '../providers/types.js';
 
 export const ProviderSchema = z.enum(['codex', 'claude']);
+export const ExportFormatSchema = z.enum(['markdown', 'json']);
 
 export const ListSessionsSchema = z.object({
   provider: ProviderSchema.optional(),
@@ -69,6 +74,13 @@ export const ResolveApprovalSchema = z.object({
   session_id: z.string().min(1),
   approval_id: z.string().min(1),
   decision: ApprovalDecisionSchema,
+});
+
+export const ExportTranscriptSchema = z.object({
+  provider: ProviderSchema,
+  session_id: z.string().min(1),
+  format: ExportFormatSchema,
+  limit: z.number().int().positive().max(500).optional(),
 });
 
 function textResult(data: unknown) {
@@ -260,7 +272,98 @@ export function createToolHandlers(providers: ProviderRegistry) {
         return errorResult(err);
       }
     },
+
+    async export_transcript(args: z.infer<typeof ExportTranscriptSchema>) {
+      try {
+        const limit = args.limit ?? 100;
+        const transcript = await providers
+          .get(args.provider)
+          .readTranscript(args.session_id, limit);
+
+        const content =
+          args.format === 'markdown'
+            ? formatTranscriptAsMarkdown(transcript)
+            : formatTranscriptAsJson(transcript);
+
+        const exportDir = join(homedir(), '.wingman', 'exports');
+        mkdirSync(exportDir, { recursive: true, mode: 0o700 });
+
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const ext = args.format === 'markdown' ? 'md' : 'json';
+        const filename = `${args.provider}_${args.session_id}_${timestamp}.${ext}`;
+        const filePath = join(exportDir, filename);
+
+        writeFileSync(filePath, content, { encoding: 'utf8', mode: 0o600 });
+
+        return textResult({
+          sessionId: args.session_id,
+          provider: args.provider,
+          format: args.format,
+          itemCount: transcript.items.length,
+          path: filePath,
+          content,
+        });
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
   };
+}
+
+function formatTranscriptAsMarkdown(transcript: Transcript): string {
+  const lines: string[] = [
+    `# Session Transcript`,
+    '',
+    `- **Session ID**: ${transcript.sessionId}`,
+    `- **Provider**: ${transcript.provider}`,
+    `- **Exported**: ${new Date().toISOString()}`,
+    `- **Messages**: ${transcript.items.length}`,
+    '',
+    '---',
+    '',
+  ];
+
+  for (const item of transcript.items) {
+    const roleLabel = formatRole(item.role);
+    lines.push(`### ${roleLabel}`);
+    if (item.turnId) {
+      lines.push(`_Turn: ${item.turnId}_`);
+    }
+    lines.push('');
+    lines.push(item.text);
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+function formatTranscriptAsJson(transcript: Transcript): string {
+  return JSON.stringify(
+    {
+      sessionId: transcript.sessionId,
+      provider: transcript.provider,
+      exportedAt: new Date().toISOString(),
+      itemCount: transcript.items.length,
+      items: transcript.items,
+    },
+    null,
+    2,
+  );
+}
+
+function formatRole(role: TranscriptItem['role']): string {
+  switch (role) {
+    case 'user':
+      return 'User';
+    case 'assistant':
+      return 'Assistant';
+    case 'system':
+      return 'System';
+    case 'tool':
+      return 'Tool';
+    default:
+      return 'Unknown';
+  }
 }
 
 export type ToolHandlers = ReturnType<typeof createToolHandlers>;
