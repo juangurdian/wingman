@@ -5,6 +5,8 @@
 
 export type ProviderName = 'codex' | 'claude';
 
+export type SessionSource = 'wingman' | 'discovered';
+
 export interface SessionSummary {
   id: string;
   provider: ProviderName;
@@ -14,6 +16,12 @@ export interface SessionSummary {
   status?: string;
   createdAt?: number;
   updatedAt?: number;
+  /** Origin of this session: 'wingman' = created via Wingman, 'discovered' = found via SDK/disk. */
+  source?: SessionSource;
+  /** Git branch at end of session (discovered sessions). */
+  gitBranch?: string;
+  /** User-set tag (discovered sessions). */
+  tag?: string;
 }
 
 export interface TranscriptItem {

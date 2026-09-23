@@ -83,6 +83,11 @@ After pairing, prefer these tools (in order):
 - `query()` with `resume` option for sending messages
 - `listSessions()`, `getSessionMessages()` for reading
 - `query().interrupt()` for interrupting
+- **Session discovery**: `list_sessions` can discover existing Claude sessions created via CLI or IDE (not just Wingman sessions)
+
+### Claude session discovery
+
+Sessions include a `source` field: `'wingman'` (created via Wingman) or `'discovered'` (found via SDK). Set `CLAUDE_DISCOVER=0` to disable discovery. This is NOT TTY hijacking — it reads session files on disk, not terminal processes.
 
 ## Mock vs real
 
@@ -90,8 +95,16 @@ After pairing, prefer these tools (in order):
 |----------|------|-----|----------|
 | Codex | Mock | `CODEX_MOCK=1` | In-memory sessions; pair works offline |
 | Codex | Real | unset mock, `codex` on PATH | JSON-RPC to `codex app-server` |
-| Claude | Mock | `CLAUDE_MOCK=1` | In-memory sessions; pair works offline |
+| Claude | Mock | `CLAUDE_MOCK=1` | In-memory sessions + mock discovered sessions |
 | Claude | Real | unset mock | Agent SDK spawns Claude subprocess |
+
+### Claude environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLAUDE_MOCK` | `0` | Enable mock mode with simulated sessions |
+| `CLAUDE_DISCOVER` | `1` | Enable session discovery (set `0` to disable) |
+| `CLAUDE_DISCOVER_DIRS` | (all) | Colon-separated directories to search |
 
 ## Session scope
 

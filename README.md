@@ -91,7 +91,7 @@ flowchart LR
     Tunnel[cloudflared / Tailscale]
     Bridge[Wingman MCP\n127.0.0.1:PORT]
     Codex[Codex app-server\nJSON-RPC stdio]
-    Claude[Claude Agent SDK\nquery/resume]
+    Claude[Claude Agent SDK\ndiscovery + resume]
   end
   Grok -->|HTTPS + Bearer| Tunnel --> Bridge
   Bridge --> Codex
@@ -132,6 +132,8 @@ flowchart LR
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CLAUDE_MOCK` | unset | Set to `1` for in-memory mock mode |
+| `CLAUDE_DISCOVER` | `1` | Set to `0` to disable session discovery |
+| `CLAUDE_DISCOVER_DIRS` | (all) | Colon-separated directories to search for sessions |
 
 The Claude provider uses the bundled Agent SDK binary automatically. No separate `claude` CLI install is required unless you override `pathToClaudeCodeExecutable` in code.
 
@@ -141,9 +143,33 @@ The Claude provider uses the bundled Agent SDK binary automatically. No separate
 
 Wingman tracks sessions it creates in a local registry (`~/.wingman/claude-sessions.json` for Claude). This ensures:
 
-1. **Isolation** — Only sessions started through Wingman's `create_session` are visible to MCP clients
+1. **Isolation** — Only sessions started through Wingman's `create_session` are visible to MCP clients by default
 2. **No TTY hijack** — We don't scan for or attach to Claude/Codex processes you started elsewhere
 3. **Resumable** — Sessions can be resumed by ID across Wingman restarts
+
+### Claude session discovery
+
+Wingman can also **discover existing Claude Code sessions** via the Agent SDK's `listSessions()`. This allows `list_sessions` to find sessions the user created via `claude` CLI or Claude Code IDE — not only sessions created through Wingman.
+
+**How discovery works:**
+1. `list_sessions` merges Wingman's registry with sessions discovered via SDK
+2. If the same session ID exists in both, the Wingman registry entry takes precedence
+3. `read_transcript`, `send_message`, and `interrupt` work for discovered sessions by resuming via `query({ options: { resume: sessionId } })`
+4. When you interact with a discovered session, it's auto-registered in Wingman's registry
+
+**What discovery is NOT:** This is not TTY hijacking. Wingman does not attach to terminal processes, scrape windows, or take over interactive sessions. Discovery reads session files on disk via official SDK APIs.
+
+Set `CLAUDE_DISCOVER=0` to disable discovery and only show Wingman-created sessions.
+
+### SessionSummary fields
+
+Sessions returned by `list_sessions` include:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `source` | `'wingman' \| 'discovered'` | Origin of the session |
+| `gitBranch` | `string?` | Git branch at end of session (discovered) |
+| `tag` | `string?` | User-set session tag (discovered) |
 
 ### Claude session storage
 
