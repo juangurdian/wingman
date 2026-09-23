@@ -1,8 +1,8 @@
 # Wingman
 
-**Your coding agent's wingman** — a TypeScript MCP bridge + pair CLI so Grok Bot (and other MCP hosts) can talk to live Codex sessions on your machine while you still see the session.
+**Your coding agent's wingman** — a TypeScript MCP bridge + pair CLI so Grok Bot (and other MCP hosts) can talk to live Codex and Claude Code sessions on your machine while you still see the session.
 
-Codex-first. Claude is stubbed until a stable session API lands.
+Dual-provider: Codex (app-server) + Claude Code (Agent SDK).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](tsconfig.json)
@@ -11,7 +11,7 @@ Codex-first. Claude is stubbed until a stable session API lands.
 
 ## Why Wingman?
 
-Cloud assistants are great copilots — until they need to *touch* the session you're already in. Wingman sits on your machine, pairs with a one-command CLI, and exposes a small MCP surface so a remote host can list threads, read transcripts, send messages, and interrupt turns — without hijacking your TTY or pretending to be the Codex UI.
+Cloud assistants are great copilots — until they need to *touch* the session you're already in. Wingman sits on your machine, pairs with a one-command CLI, and exposes a small MCP surface so a remote host can list threads, read transcripts, send messages, and interrupt turns — without hijacking your TTY or pretending to be the agent UI.
 
 Think of it as a radio link between the bot in the cloud and the agent on your desk. You're still flying; Wingman just rides shotgun.
 
@@ -21,10 +21,10 @@ Think of it as a radio link between the bot in the cloud and the agent on your d
 git clone https://github.com/juangurdian/wingman.git
 cd wingman
 npm install
-CODEX_MOCK=1 npm run pair
+CODEX_MOCK=1 npm run pair        # or CLAUDE_MOCK=1 for Claude
 ```
 
-1. **Pair** — `CODEX_MOCK=1 npm run pair` generates a bearer token, writes `~/.wingman/config.json`, and starts MCP on `127.0.0.1:3847/mcp`.
+1. **Pair** — `npm run pair` generates a bearer token, writes `~/.wingman/config.json`, and starts MCP on `127.0.0.1:3847/mcp`.
 2. **Tunnel** — remote hosts cannot reach localhost. Expose the port:
 
    ```bash
@@ -45,31 +45,38 @@ CODEX_MOCK=1 npm run pair
 
 Then ask the host to call `list_sessions` → `read_transcript` / `send_message` / `interrupt`.
 
-### Real Codex mode
+### Real provider modes
 
-Requires `codex` on `PATH`. Wingman speaks **Codex app-server** JSON-RPC (`codex app-server` over stdio) — **not** the removed `codex mcp-server`.
+**Codex** — Requires `codex` on `PATH`. Wingman speaks **Codex app-server** JSON-RPC (`codex app-server` over stdio).
 
 ```bash
 npm run pair   # unset CODEX_MOCK
 ```
 
-Docs: [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [app-server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
+**Claude Code** — Uses the `@anthropic-ai/claude-agent-sdk`. Sessions are created and resumed through the SDK.
+
+```bash
+npm run pair   # unset CLAUDE_MOCK
+```
+
+Docs: [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/typescript)
 
 ## Can / Can't
 
 **Can**
 
-- Pair in **mock mode** with no Codex install (`CODEX_MOCK=1`)
+- Pair in **mock mode** with no agent install (`CODEX_MOCK=1` or `CLAUDE_MOCK=1`)
 - Bridge Grok Bot ↔ local Codex threads via app-server once tunneled
+- Bridge Grok Bot ↔ local Claude Code sessions via Agent SDK once tunneled
 - Bearer-protect the MCP HTTP endpoint
-- Create / list / read / message / interrupt Codex sessions (real or mock)
+- Create / list / read / message / interrupt sessions (real or mock) for both providers
 - Keep you in the loop — the session stays visible on your machine
 
-**Can't (yet)**
+**Can't (scope / v1 limits)**
 
 - Reach the bridge from a remote host without a **tunnel** (binds loopback only)
-- Drive full Claude Code session UX (stub / optional `claude -p` oneshot)
-- Auto-approve Codex sandbox prompts (approvals still belong to the local Codex client)
+- Hijack arbitrary Claude / Codex TTYs you already have open elsewhere — Wingman manages sessions it creates, not random interactive shells
+- Auto-approve sandbox prompts (approvals still belong to the local agent client)
 - Use legacy `codex mcp-server` (removed / not used here)
 
 ## Architecture
@@ -83,22 +90,63 @@ flowchart LR
     Tunnel[cloudflared / Tailscale]
     Bridge[Wingman MCP\n127.0.0.1:PORT]
     Codex[Codex app-server\nJSON-RPC stdio]
-    Claude[Claude stub]
+    Claude[Claude Agent SDK\nquery/resume]
   end
   Grok -->|HTTPS + Bearer| Tunnel --> Bridge
   Bridge --> Codex
-  Bridge -.->|not yet enabled| Claude
+  Bridge --> Claude
 ```
 
 ## MCP tools
 
 | Tool | Args | Notes |
 |------|------|--------|
-| `list_sessions` | `provider?`: `codex` \| `claude` | Lists sessions (Claude stub marker if disabled) |
+| `list_sessions` | `provider?`: `codex` \| `claude` | Lists sessions for one or both providers |
 | `read_transcript` | `provider`, `session_id`, `limit?` | Recent messages |
-| `send_message` | `provider`, `session_id`, `text` | Codex: `turn/start` |
-| `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt` (needs known turn id) |
-| `create_session` | `provider`, `cwd?`, `prompt?` | Optional; Codex: `thread/start` |
+| `send_message` | `provider`, `session_id`, `text` | Codex: `turn/start`; Claude: `query({resume})` |
+| `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`; Claude: `query.interrupt()` |
+| `create_session` | `provider`, `cwd?`, `prompt?` | Codex: `thread/start`; Claude: new SDK query with sessionId |
+
+## Environment variables
+
+### General
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WINGMAN_TOKEN` | (generated) | Bearer token for MCP auth |
+| `WINGMAN_PORT` | `3847` | MCP server port |
+| `WINGMAN_HOST` | `127.0.0.1` | MCP server bind address |
+
+### Codex
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CODEX_MOCK` | unset | Set to `1` for in-memory mock mode |
+| `CODEX_BIN` | `codex` | Path to Codex CLI binary |
+| `CODEX_APP_SERVER_ARGS` | `app-server` | Args passed to Codex binary |
+| `CODEX_RPC_TIMEOUT_MS` | `60000` | JSON-RPC timeout |
+
+### Claude
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLAUDE_MOCK` | unset | Set to `1` for in-memory mock mode |
+
+The Claude provider uses the bundled Agent SDK binary automatically. No separate `claude` CLI install is required unless you override `pathToClaudeCodeExecutable` in code.
+
+## Session management
+
+### Wingman-managed sessions
+
+Wingman tracks sessions it creates in a local registry (`~/.wingman/claude-sessions.json` for Claude). This ensures:
+
+1. **Isolation** — Only sessions started through Wingman's `create_session` are visible to MCP clients
+2. **No TTY hijack** — We don't scan for or attach to Claude/Codex processes you started elsewhere
+3. **Resumable** — Sessions can be resumed by ID across Wingman restarts
+
+### Claude session storage
+
+Claude sessions are stored by the Agent SDK in `~/.claude/projects/<project-key>/<session-id>.jsonl`. Wingman's registry maps session IDs to their working directories so `listSessions()` and `readTranscript()` can locate them.
 
 ## Scripts
 
@@ -124,25 +172,15 @@ flowchart LR
 }
 ```
 
-Env overrides (preferred → legacy alias):
-
-| Preferred | Legacy alias |
-|-----------|--------------|
-| `WINGMAN_TOKEN` | `SESSION_BRIDGE_TOKEN` |
-| `WINGMAN_PORT` | `SESSION_BRIDGE_PORT` |
-| `WINGMAN_HOST` | `SESSION_BRIDGE_HOST` |
-
-Also: `CODEX_MOCK`, `CODEX_BIN`, `CODEX_APP_SERVER_ARGS`.
-
 ## Agent skill
 
 See [`skills/pair-coding-sessions/SKILL.md`](skills/pair-coding-sessions/SKILL.md) for setup / pair / operate steps aligned with this CLI.
 
 ## Community
 
-Open-source. Early MVP — Codex path works (mock + app-server); Claude is stubbed; APIs may shift before 1.0.
+Open-source. MVP — Codex and Claude providers work (mock + real); APIs may shift before 1.0.
 
-Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Ideas for tunnel helpers, Claude provider work, and other MCP-host guides are especially useful.
+Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Ideas for tunnel helpers, provider improvements, and other MCP-host guides are especially useful.
 
 If Wingman helped you pair a session, star the repo or open an issue with what you tried. Good wingmen share the checklist.
 
@@ -152,7 +190,7 @@ If Wingman helped you pair a session, star the repo or open an issue with what y
 npm install
 npm test
 npm run build
-CODEX_MOCK=1 npm run pair
+CODEX_MOCK=1 npm run pair   # or CLAUDE_MOCK=1
 ```
 
 Node 20+. Success criteria: install, test, and build succeed; mock pair prints URL + token.
