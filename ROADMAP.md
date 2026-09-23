@@ -49,7 +49,7 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | Feature | Description |
 |---------|-------------|
 | Codex wait/steer/approvals | Stream turn progress; approval hooks for sandbox prompts |
-| `npx wingman` install | Global CLI install via npx for faster onboarding |
+| `npx wingman-mcp` install | ✅ Shipped — run `npx wingman-mcp` or `npm i -g wingman-mcp` |
 | Durable tunnel helpers | Built-in Cloudflare/Tailscale setup wizard |
 | Session tags/names | Label sessions for easier discovery |
 | Configurable timeouts | `CLAUDE_SEND_TIMEOUT_MS` and friends |
