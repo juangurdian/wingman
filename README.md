@@ -135,6 +135,10 @@ flowchart LR
 | `send_message` | `provider`, `session_id`, `text` | Codex: `turn/start`; Claude: returns `accepted` quickly, turn runs async |
 | `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`; Claude: works when Wingman owns the active turn |
 | `create_session` | `provider`, `cwd?`, `prompt?` | Codex: `thread/start`; Claude: new session with optional initial prompt (async) |
+| `wait_turn` | `provider: codex`, `session_id`, `timeout_ms?`, `poll_interval_ms?` | Wait for turn to complete/fail/timeout; returns status + message snippet |
+| `steer` | `provider: codex`, `session_id`, `text` | Add guidance to in-flight turn via `turn/steer` |
+| `list_approvals` | `provider: codex`, `session_id` | List pending sandbox/command approvals |
+| `resolve_approval` | `provider: codex`, `session_id`, `approval_id`, `decision` | Resolve approval: `accept` \| `acceptForSession` \| `decline` \| `cancel` |
 
 ### create_session behavior
 
@@ -157,6 +161,29 @@ For **Claude sessions**, `interrupt` works reliably when Wingman owns the active
 **Limitation**: Interrupting discovered sessions or sessions where the turn was started outside Wingman (e.g., via Claude CLI directly) may not work — Wingman has no active query handle to abort. In these cases, use the Claude CLI directly: `Ctrl+C` in the terminal or `claude interrupt`.
 
 For **Codex sessions**, `interrupt` requires a known active `turnId` tracked from `turn/started` notifications.
+
+### Codex wait/steer/approvals (Codex-only)
+
+These tools provide deeper integration with Codex app-server for long-running turns:
+
+**wait_turn**: Long-poll instead of busy-polling `read_transcript`. Returns when the turn completes, fails, is interrupted, times out, or when approvals are pending. Example response:
+```json
+{ "sessionId": "thr_123", "turnId": "turn_456", "status": "completed", "latestMessage": "Done!" }
+```
+
+**steer**: Add mid-turn guidance without starting a new turn. Useful for follow-up instructions or clarifications while Codex is working. Uses Codex's `turn/steer` API.
+
+**list_approvals** + **resolve_approval**: When Codex requires approval for sandbox commands, file changes, or network access, these tools let you surface and resolve those requests programmatically. Approvals are modeled as server-initiated JSON-RPC requests in the Codex protocol.
+
+Example approval flow:
+```
+1. send_message("sudo apt update")  →  { status: "inProgress" }
+2. list_approvals()                 →  { approvals: [{ id: "appr_1", kind: "command", command: "sudo apt update" }] }
+3. resolve_approval("appr_1", "accept")  →  { resolved: true }
+4. wait_turn()                      →  { status: "completed" }
+```
+
+**Note**: In mock mode (`CODEX_MOCK=1`), commands containing `sudo` or `rm -rf` trigger simulated approval requests for testing.
 
 ## Environment variables
 

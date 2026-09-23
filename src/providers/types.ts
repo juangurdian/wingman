@@ -65,6 +65,73 @@ export interface SessionDetail extends SessionSummary {
   activeTurnStartedAt?: number;
 }
 
+export interface WaitTurnOptions {
+  /** Maximum time to wait in milliseconds (default: 60000) */
+  timeoutMs?: number;
+  /** Poll interval in milliseconds for checking turn status (default: 500) */
+  pollIntervalMs?: number;
+}
+
+export interface WaitTurnResult {
+  sessionId: string;
+  turnId?: string;
+  /** Final status: 'completed' | 'interrupted' | 'failed' | 'timeout' | 'idle' */
+  status: 'completed' | 'interrupted' | 'failed' | 'timeout' | 'idle';
+  /** Snippet of the latest agent message if available */
+  latestMessage?: string;
+  /** Error message if status is 'failed' */
+  error?: string;
+}
+
+export interface SteerResult {
+  sessionId: string;
+  turnId?: string;
+  /** Whether the steer was accepted */
+  accepted: boolean;
+  /** Error message if not accepted */
+  error?: string;
+}
+
+export type ApprovalKind = 'command' | 'fileChange' | 'network' | 'writeStdin';
+export type ApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 'cancel';
+
+export interface Approval {
+  /** Unique approval ID */
+  id: string;
+  /** Session ID this approval belongs to */
+  sessionId: string;
+  /** Turn ID this approval belongs to */
+  turnId?: string;
+  /** Item ID if associated with an item */
+  itemId?: string;
+  /** Kind of approval request */
+  kind: ApprovalKind;
+  /** Command to execute (for command approvals) */
+  command?: string;
+  /** Working directory (for command approvals) */
+  cwd?: string;
+  /** Description / reason for the approval */
+  reason?: string;
+  /** Timestamp when approval was requested */
+  requestedAt: number;
+}
+
+export interface ListApprovalsResult {
+  sessionId: string;
+  approvals: Approval[];
+}
+
+export interface ResolveApprovalResult {
+  sessionId: string;
+  approvalId: string;
+  /** Whether the resolution was applied */
+  resolved: boolean;
+  /** Decision that was applied */
+  decision?: ApprovalDecision;
+  /** Error message if not resolved */
+  error?: string;
+}
+
 export interface SessionProvider {
   readonly name: ProviderName;
   listSessions(): Promise<SessionSummary[]>;
@@ -73,4 +140,13 @@ export interface SessionProvider {
   sendMessage(sessionId: string, text: string): Promise<SendMessageResult>;
   interrupt(sessionId: string): Promise<InterruptResult>;
   createSession?(opts?: { cwd?: string; prompt?: string }): Promise<CreateSessionResult>;
+  
+  /** Wait for an active turn to complete (Codex-specific) */
+  waitTurn?(sessionId: string, opts?: WaitTurnOptions): Promise<WaitTurnResult>;
+  /** Add guidance to an in-flight turn without starting a new turn (Codex-specific) */
+  steer?(sessionId: string, text: string): Promise<SteerResult>;
+  /** List pending approvals for a session (Codex-specific) */
+  listApprovals?(sessionId: string): Promise<ListApprovalsResult>;
+  /** Resolve a pending approval (Codex-specific) */
+  resolveApproval?(sessionId: string, approvalId: string, decision: ApprovalDecision): Promise<ResolveApprovalResult>;
 }
