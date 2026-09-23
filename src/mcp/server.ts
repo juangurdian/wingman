@@ -1,7 +1,7 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 /**
  * Streamable HTTP MCP server with bearer auth.
- * Binds to 127.0.0.1 by default — expose via cloudflared/tailscale for Grok Bot.
+ * Binds to 127.0.0.1 by default â€” expose via cloudflared/tailscale for Grok Bot.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -55,7 +55,10 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
   const providers = createProviders();
   const handlers = createToolHandlers(providers);
 
-  const app = createMcpExpressApp({ host });
+  // createMcpExpressApp's `host` only controls DNS-rebinding Host checks.
+  // Keep listen() on loopback (`host` below), but pass 0.0.0.0 here so
+  // Cloudflare/Tailscale tunnel Hostnames are accepted. Bearer auth is the gate.
+  const app = createMcpExpressApp({ host: '0.0.0.0' });
 
   // Health (no auth) for local probes / tunnels
   app.get('/healthz', (_req, res) => {
@@ -137,7 +140,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
     return server;
   };
 
-  // Stateless streamable HTTP (one transport+server per request) — simple & robust for tunnels.
+  // Stateless streamable HTTP (one transport+server per request) â€” simple & robust for tunnels.
   app.post('/mcp', async (req, res) => {
     const server = createServer();
     try {
