@@ -21,6 +21,7 @@ import {
   ListApprovalsSchema,
   ResolveApprovalSchema,
   ApprovalDecisionSchema,
+  SetSessionMetaSchema,
 } from './tools.js';
 import { bearerAuth } from './auth.js';
 import { createProviders } from '../providers/index.js';
@@ -30,6 +31,7 @@ import {
   resolvePort,
   resolveToken,
   mcpUrl,
+  isHealthzAuthFree,
   type BridgeConfig,
 } from '../config.js';
 
@@ -66,10 +68,18 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
   // Cloudflare/Tailscale tunnel Hostnames are accepted. Bearer auth is the gate.
   const app = createMcpExpressApp({ host: '0.0.0.0' });
 
-  // Health (no auth) for local probes / tunnels
-  app.get('/healthz', (_req, res) => {
-    res.status(200).json({ ok: true, service: 'wingman' });
-  });
+  // Health endpoint - auth requirement is configurable via WINGMAN_HEALTHZ_AUTH_FREE
+  // Default: requires auth. Set WINGMAN_HEALTHZ_AUTH_FREE=1 for monitors/tunnels that need auth-free access.
+  const healthzAuthFree = isHealthzAuthFree();
+  if (healthzAuthFree) {
+    app.get('/healthz', (_req, res) => {
+      res.status(200).json({ ok: true, service: 'wingman' });
+    });
+  } else {
+    app.get('/healthz', bearerAuth(token), (_req, res) => {
+      res.status(200).json({ ok: true, service: 'wingman' });
+    });
+  }
 
   app.use('/mcp', bearerAuth(token));
 
@@ -133,11 +143,13 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'create_session',
       {
         description:
-          'Create a new session (Codex: thread/start). Optional cwd and initial prompt.',
+          'Create a new session (Codex: thread/start). Optional cwd, initial prompt, name, and tags.',
         inputSchema: {
           provider: z.enum(['codex', 'claude']),
           cwd: z.string().optional(),
           prompt: z.string().optional(),
+          name: z.string().optional(),
+          tags: z.array(z.string()).optional(),
         },
       },
       async (args) => handlers.create_session(CreateSessionSchema.parse(args)),
@@ -216,6 +228,21 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       async (args) => handlers.resolve_approval(ResolveApprovalSchema.parse(args)),
     );
 
+    server.registerTool(
+      'set_session_meta',
+      {
+        description:
+          'Set session metadata (name, tags) for easier discovery. Works for Wingman-owned sessions.',
+        inputSchema: {
+          provider: z.enum(['codex', 'claude']),
+          session_id: z.string(),
+          name: z.string().optional(),
+          tags: z.array(z.string()).optional(),
+        },
+      },
+      async (args) => handlers.set_session_meta(SetSessionMetaSchema.parse(args)),
+    );
+
     return server;
   };
 
@@ -275,6 +302,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
   if (!opts.quiet) {
     console.error(`wingman MCP listening on ${url}`);
     console.error(`mock=${process.env.CODEX_MOCK === '1' ? 'yes' : 'no'}`);
+    console.error(`healthz_auth_free=${healthzAuthFree ? 'yes' : 'no'}`);
   }
 
   return {

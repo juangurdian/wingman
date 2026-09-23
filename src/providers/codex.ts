@@ -34,7 +34,12 @@ import type {
   TranscriptItem,
   WaitTurnOptions,
   WaitTurnResult,
+  SetSessionMetaResult,
 } from './types.js';
+import {
+  resolveWaitTurnTimeoutMs,
+  resolveWaitTurnPollMs,
+} from '../config.js';
 
 type JsonRpcId = number;
 type Pending = {
@@ -51,6 +56,7 @@ interface MockSession {
   cwd?: string;
   name?: string;
   preview?: string;
+  tags?: string[];
   createdAt: number;
   updatedAt: number;
   items: TranscriptItem[];
@@ -98,13 +104,14 @@ export class CodexProvider implements SessionProvider {
     }
   }
 
-  private seedMock(opts?: { cwd?: string; name?: string; preview?: string }): MockSession {
+  private seedMock(opts?: { cwd?: string; name?: string; preview?: string; tags?: string[] }): MockSession {
     const now = Date.now();
     const s: MockSession = {
       id: `thr_mock_${randomUUID().slice(0, 8)}`,
       cwd: opts?.cwd,
       name: opts?.name,
       preview: opts?.preview,
+      tags: opts?.tags,
       createdAt: now,
       updatedAt: now,
       items: [],
@@ -122,6 +129,7 @@ export class CodexProvider implements SessionProvider {
         cwd: s.cwd,
         name: s.name,
         preview: s.preview,
+        tags: s.tags,
         status: s.activeTurnId ? 'active' : 'idle',
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
@@ -158,6 +166,7 @@ export class CodexProvider implements SessionProvider {
         cwd: s.cwd,
         name: s.name,
         preview: s.preview,
+        tags: s.tags,
         status: activeTurnId ? 'running' : (s.activeTurnId ? 'active' : 'idle'),
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
@@ -302,12 +311,13 @@ export class CodexProvider implements SessionProvider {
     return { sessionId, turnId, status: 'interrupted' };
   }
 
-  async createSession(opts?: { cwd?: string; prompt?: string }): Promise<CreateSessionResult> {
+  async createSession(opts?: { cwd?: string; prompt?: string; name?: string; tags?: string[] }): Promise<CreateSessionResult> {
     if (useMock()) {
       const s = this.seedMock({
         cwd: opts?.cwd ?? process.cwd(),
-        name: 'mock-created',
+        name: opts?.name ?? 'mock-created',
         preview: opts?.prompt?.slice(0, 80),
+        tags: opts?.tags,
       });
       if (opts?.prompt) {
         await this.sendMessage(s.id, opts.prompt);
@@ -333,8 +343,8 @@ export class CodexProvider implements SessionProvider {
   }
 
   async waitTurn(sessionId: string, opts?: WaitTurnOptions): Promise<WaitTurnResult> {
-    const timeoutMs = opts?.timeoutMs ?? 60_000;
-    const pollIntervalMs = opts?.pollIntervalMs ?? 500;
+    const timeoutMs = opts?.timeoutMs ?? resolveWaitTurnTimeoutMs();
+    const pollIntervalMs = opts?.pollIntervalMs ?? resolveWaitTurnPollMs();
 
     if (useMock()) {
       const s = this.mockSessions.get(sessionId);
@@ -591,6 +601,39 @@ export class CodexProvider implements SessionProvider {
     }
 
     return { sessionId, approvalId, resolved: true, decision };
+  }
+
+  async setSessionMeta(
+    sessionId: string,
+    meta: { name?: string; tags?: string[] },
+  ): Promise<SetSessionMetaResult> {
+    if (useMock()) {
+      const s = this.mockSessions.get(sessionId);
+      if (!s) {
+        return {
+          sessionId,
+          updated: false,
+          error: `Session not found: ${sessionId}`,
+        };
+      }
+      if (meta.name !== undefined) s.name = meta.name;
+      if (meta.tags !== undefined) s.tags = meta.tags;
+      s.updatedAt = Date.now();
+      return {
+        sessionId,
+        updated: true,
+        name: s.name,
+        tags: s.tags,
+      };
+    }
+
+    // Real mode: Codex doesn't support session metadata natively
+    // We would need a local registry similar to Claude, but for now return an error
+    return {
+      sessionId,
+      updated: false,
+      error: 'Session metadata is not supported for Codex sessions in real mode (Codex app-server does not support custom metadata)',
+    };
   }
 
   async close(): Promise<void> {

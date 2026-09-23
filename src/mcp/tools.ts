@@ -28,6 +28,15 @@ export const CreateSessionSchema = z.object({
   provider: ProviderSchema,
   cwd: z.string().optional(),
   prompt: z.string().optional(),
+  name: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+});
+
+export const SetSessionMetaSchema = z.object({
+  provider: ProviderSchema,
+  session_id: z.string().min(1),
+  name: z.string().optional(),
+  tags: z.array(z.string()).optional(),
 });
 
 export const GetSessionSchema = z.object({
@@ -152,6 +161,24 @@ export function createToolHandlers(providers: ProviderRegistry) {
         const result = await provider.createSession({
           cwd: args.cwd,
           prompt: args.prompt,
+          name: args.name,
+          tags: args.tags,
+        });
+        return textResult(result);
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+
+    async set_session_meta(args: z.infer<typeof SetSessionMetaSchema>) {
+      try {
+        const provider = providers.get(args.provider);
+        if (!provider.setSessionMeta) {
+          return errorResult(`set_session_meta not supported for ${args.provider}`);
+        }
+        const result = await provider.setSessionMeta(args.session_id, {
+          name: args.name,
+          tags: args.tags,
         });
         return textResult(result);
       } catch (err) {

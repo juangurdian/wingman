@@ -52,9 +52,9 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 |---------|-------------|
 | `npx wingman-mcp` install | ✅ Shipped — run `npx wingman-mcp` or `npm i -g wingman-mcp` |
 | Durable tunnel helpers | ✅ Shipped — `wingman-tunnel` CLI with ranked recommendations |
-| Session tags/names | Label sessions for easier discovery |
-| Configurable timeouts | `CLAUDE_SEND_TIMEOUT_MS` and friends |
-| Health endpoint auth toggle | Optional auth-free `/healthz` for monitors |
+| Session tags/names | ✅ Shipped — `create_session` accepts `name`/`tags`; `set_session_meta` tool for updates |
+| Configurable timeouts | ✅ Shipped — `CLAUDE_SEND_TIMEOUT_MS`, `WINGMAN_WAIT_TURN_TIMEOUT_MS`, `WINGMAN_WAIT_TURN_POLL_MS` |
+| Health endpoint auth toggle | ✅ Shipped — `WINGMAN_HEALTHZ_AUTH_FREE=1` for monitors/tunnels |
 
 ### Later
 
