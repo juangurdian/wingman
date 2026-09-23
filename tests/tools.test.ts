@@ -53,7 +53,7 @@ class MockCodex implements SessionProvider {
   async createSession(opts?: { cwd?: string; prompt?: string }): Promise<CreateSessionResult> {
     const id = 'thr_created';
     this.sessions.push({ id, provider: 'codex', cwd: opts?.cwd, preview: opts?.prompt });
-    return { sessionId: id, provider: 'codex', cwd: opts?.cwd };
+    return { sessionId: id, provider: 'codex', cwd: opts?.cwd, status: opts?.prompt ? 'accepted' : 'created' };
   }
 }
 
@@ -151,7 +151,13 @@ class MockClaudeWithDiscovery implements SessionProvider {
       source: 'wingman',
     });
     this.transcripts.set(id, []);
-    return { sessionId: id, provider: 'claude', cwd: opts?.cwd };
+    return {
+      sessionId: id,
+      provider: 'claude',
+      cwd: opts?.cwd,
+      status: opts?.prompt ? 'accepted' : 'created',
+      turnId: opts?.prompt ? 'turn_initial' : undefined,
+    };
   }
   async getSession(sessionId: string): Promise<SessionDetail | null> {
     const sessions = await this.listSessions();
@@ -238,7 +244,13 @@ class MockClaudeEnabled implements SessionProvider {
       this.items.push({ role: 'user', text: opts.prompt, turnId: 'turn_init' });
       this.items.push({ role: 'assistant', text: '[mock] Session started', turnId: 'turn_init' });
     }
-    return { sessionId: id, provider: 'claude', cwd: opts?.cwd };
+    return {
+      sessionId: id,
+      provider: 'claude',
+      cwd: opts?.cwd,
+      status: opts?.prompt ? 'accepted' : 'created',
+      turnId: opts?.prompt ? 'turn_init' : undefined,
+    };
   }
   async getSession(sessionId: string): Promise<SessionDetail | null> {
     const session = this.sessions.find((s) => s.id === sessionId);
@@ -328,6 +340,18 @@ describe('tool handlers with mocked Codex provider', () => {
     });
     const body = JSON.parse(res.content[0]!.text);
     expect(body.sessionId).toBe('thr_created');
+    expect(body.status).toBe('accepted');
+  });
+
+  it('create_session without prompt returns created status', async () => {
+    const res = await handlers.create_session({
+      provider: 'codex',
+      cwd: '/tmp/demo',
+    });
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessionId).toBe('thr_created');
+    expect(body.status).toBe('created');
+    expect(body.turnId).toBeUndefined();
   });
 
   it('claude send_message returns error when disabled', async () => {
@@ -412,7 +436,21 @@ describe('tool handlers with mocked Claude provider (enabled)', () => {
     const body = JSON.parse(res.content[0]!.text);
     expect(body.provider).toBe('claude');
     expect(body.cwd).toBe('/tmp/claude-new');
+    expect(body.status).toBe('accepted');
+    expect(body.turnId).toBeDefined();
     expect(claude.sessions.some((s) => s.id === body.sessionId)).toBe(true);
+  });
+
+  it('create_session without prompt returns created status for claude', async () => {
+    const res = await handlers.create_session({
+      provider: 'claude',
+      cwd: '/tmp/claude-new',
+    });
+    expect(res.isError).toBeUndefined();
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.provider).toBe('claude');
+    expect(body.status).toBe('created');
+    expect(body.turnId).toBeUndefined();
   });
 
   it('read_transcript errors for unknown session', async () => {

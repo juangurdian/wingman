@@ -232,4 +232,77 @@ describe('ClaudeProvider mock mode', () => {
     
     expect(provider.getSessionStatus(result.sessionId)).toBe('idle');
   });
+
+  it('createSession without prompt returns status created', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+    });
+    
+    expect(result.provider).toBe('claude');
+    expect(result.status).toBe('created');
+    expect(result.turnId).toBeUndefined();
+    expect(provider.getSessionStatus(result.sessionId)).toBe('idle');
+  });
+
+  it('createSession with prompt returns accepted quickly with turnId', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const startTime = Date.now();
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+      prompt: 'Hello Claude',
+    });
+    const elapsed = Date.now() - startTime;
+    
+    expect(result.provider).toBe('claude');
+    expect(result.status).toBe('accepted');
+    expect(result.turnId).toBeDefined();
+    expect(result.sessionId).toMatch(/^claude_mock_/);
+    expect(elapsed).toBeLessThan(100);
+  });
+
+  it('createSession with prompt starts turn in background', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+      prompt: 'Test background turn',
+    });
+    
+    expect(provider.getSessionStatus(result.sessionId)).toBe('running');
+    
+    const transcript = await provider.readTranscript(result.sessionId, 50);
+    expect(transcript.items.some(i => i.text === 'Test background turn')).toBe(true);
+    
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    expect(provider.getSessionStatus(result.sessionId)).toBe('idle');
+    
+    const transcriptAfter = await provider.readTranscript(result.sessionId, 50);
+    expect(transcriptAfter.items.some(i => i.text.includes('[mock Claude]'))).toBe(true);
+  });
+
+  it('createSession with prompt session can be interrupted', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+      prompt: 'Long task',
+    });
+    
+    expect(result.status).toBe('accepted');
+    expect(provider.getSessionStatus(result.sessionId)).toBe('running');
+    
+    const interruptResult = await provider.interrupt(result.sessionId);
+    
+    expect(interruptResult.status).toBe('interrupted');
+    expect(interruptResult.turnId).toBe(result.turnId);
+    expect(provider.getSessionStatus(result.sessionId)).toBe('idle');
+  });
 });

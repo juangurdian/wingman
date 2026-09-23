@@ -36,6 +36,7 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Async send_message for Claude | ✅ | Returns `accepted` quickly; turn runs in background |
+| Async create_session with prompt | ✅ | Returns `accepted` + `turnId` quickly; initial turn runs in background |
 | Session status (`get_session`) | ✅ | Track idle vs running, activeTurnId |
 | Transcript ordering fix | ✅ | Newest messages at end; regression test |
 | `wingman doctor` | ✅ | Node version, config, port, SDK/binary checks |
