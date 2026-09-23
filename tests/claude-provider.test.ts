@@ -176,4 +176,60 @@ describe('ClaudeProvider mock mode', () => {
     const sessionAfter = await provider.getSession(result.sessionId);
     expect(sessionAfter?.status).toBe('idle');
   });
+
+  it('interrupt stops active turn and returns turnId', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+    });
+    
+    const sendResult = await provider.sendMessage(result.sessionId, 'long task');
+    expect(sendResult.status).toBe('accepted');
+    
+    const interruptResult = await provider.interrupt(result.sessionId);
+    
+    expect(interruptResult.sessionId).toBe(result.sessionId);
+    expect(interruptResult.status).toBe('interrupted');
+    expect(interruptResult.turnId).toBeDefined();
+    
+    const session = await provider.getSession(result.sessionId);
+    expect(session?.status).toBe('idle');
+  });
+
+  it('interrupt returns no_active_turn when session is idle', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+    });
+    
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    const interruptResult = await provider.interrupt(result.sessionId);
+    
+    expect(interruptResult.sessionId).toBe(result.sessionId);
+    expect(interruptResult.status).toBe('interrupted');
+  });
+
+  it('getSessionStatus returns correct status', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+    });
+    
+    expect(provider.getSessionStatus(result.sessionId)).toBe('idle');
+    
+    const sendPromise = provider.sendMessage(result.sessionId, 'test');
+    expect(provider.getSessionStatus(result.sessionId)).toBe('running');
+    
+    await sendPromise;
+    await new Promise(resolve => setTimeout(resolve, 60));
+    
+    expect(provider.getSessionStatus(result.sessionId)).toBe('idle');
+  });
 });

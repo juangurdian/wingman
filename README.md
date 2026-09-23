@@ -123,6 +123,14 @@ For **Claude sessions**, `send_message` returns immediately with `{ status: "acc
 
 For **Codex sessions**, `send_message` blocks until `turn/start` returns (typically fast), then returns `{ status: "completed" | "inProgress" }`.
 
+### interrupt behavior
+
+For **Claude sessions**, `interrupt` works reliably when Wingman owns the active turn (i.e., you called `send_message` through Wingman for the current turn). Returns `{ status: "interrupted", turnId }` on success, or `{ status: "no_active_turn" }` if the session is idle.
+
+**Limitation**: Interrupting discovered sessions or sessions where the turn was started outside Wingman (e.g., via Claude CLI directly) may not work — Wingman has no active query handle to abort. In these cases, use the Claude CLI directly: `Ctrl+C` in the terminal or `claude interrupt`.
+
+For **Codex sessions**, `interrupt` requires a known active `turnId` tracked from `turn/started` notifications.
+
 ## Environment variables
 
 ### General
