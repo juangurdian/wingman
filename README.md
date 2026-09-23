@@ -47,15 +47,24 @@ npm run pair
 ### After pairing
 
 1. **Pair** — `wingman-pair` generates a bearer token, writes `~/.wingman/config.json`, and starts MCP on `127.0.0.1:3847/mcp`.
-2. **Tunnel** — remote hosts cannot reach localhost. Expose the port:
+2. **Tunnel** — remote hosts cannot reach localhost. Pick a tunnel option (ranked by durability):
 
    ```bash
-   # Cloudflare quick tunnel
-   cloudflared tunnel --url http://127.0.0.1:3847
+   # Option 1: Tailscale Serve (stable, loopback to your network)
+   tailscale serve --bg 3847
 
-   # or Tailscale Funnel
+   # Option 2: Tailscale Funnel (stable, public URL)
    tailscale funnel 3847
+
+   # Option 3: Cloudflare named tunnel (stable, custom domain)
+   # Run 'wingman-tunnel' for one-time setup instructions
+   cloudflared tunnel run wingman
+
+   # Option 4: Cloudflare quick tunnel (ephemeral, for demos)
+   cloudflared tunnel --url http://127.0.0.1:3847
    ```
+
+   For detailed setup help, run `wingman-tunnel` (or `npm run tunnel`).
 
 3. **Add MCP server** (Grok Bot / Cursor `AddMcpServer`):
 
@@ -260,6 +269,7 @@ When installed globally (`npm i -g wingman-mcp`) or via npx:
 |---------|---------|
 | `wingman-pair` / `wingman-mcp` | Generate token, save config, start MCP, print pair instructions |
 | `wingman-doctor` | Check environment: Node version, config, port, Claude SDK / Codex binary |
+| `wingman-tunnel` | Detect tunnel tools, print ranked setup commands, persist tunnel state |
 
 For local development:
 
@@ -267,6 +277,7 @@ For local development:
 |--------|---------|
 | `npm run pair` | Same as `wingman-pair` (uses tsx) |
 | `npm run doctor` | Same as `wingman-doctor` |
+| `npm run tunnel` | Same as `wingman-tunnel` |
 | `npm run dev` | Start MCP only (needs existing config/token) |
 | `npm run build` | Compile TypeScript → `dist/` |
 | `npm test` | Vitest unit tests (mocked providers) |
