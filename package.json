@@ -1,0 +1,54 @@
+{
+  "name": "session-bridge",
+  "version": "0.1.0",
+  "description": "TypeScript MCP bridge + pair CLI so Grok Bot can talk to Codex (and stub Claude) sessions on a user's machine",
+  "type": "module",
+  "main": "dist/mcp/server.js",
+  "bin": {
+    "session-bridge-pair": "./dist/pair.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/mcp/server.ts",
+    "pair": "tsx src/pair.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "mcp",
+    "codex",
+    "session-bridge",
+    "grok",
+    "openai-codex",
+    "claude-code",
+    "mcp-server",
+    "open-source"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/node": "^22.15.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0",
+    "vitest": "^2.1.9"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/juangurdian/session-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/juangurdian/session-bridge/issues"
+  },
+  "homepage": "https://github.com/juangurdian/session-bridge#readme",
+  "author": "Juan Gurdian and contributors"
+}

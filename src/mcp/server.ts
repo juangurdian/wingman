@@ -1,0 +1,236 @@
+#!/usr/bin/env node
+/**
+ * Streamable HTTP MCP server with bearer auth.
+ * Binds to 127.0.0.1 by default — expose via cloudflared/tailscale for Grok Bot.
+ */
+
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
+import { z } from 'zod';
+import {
+  createToolHandlers,
+  ListSessionsSchema,
+  ReadTranscriptSchema,
+  SendMessageSchema,
+  InterruptSchema,
+  CreateSessionSchema,
+} from './tools.js';
+import { bearerAuth } from './auth.js';
+import { createProviders } from '../providers/index.js';
+import {
+  loadConfig,
+  resolveHost,
+  resolvePort,
+  mcpUrl,
+  type BridgeConfig,
+} from '../config.js';
+
+export interface StartServerOptions {
+  host?: string;
+  port?: number;
+  token?: string;
+  /** When true, do not call process exit handlers that keep pair alive differently */
+  quiet?: boolean;
+}
+
+export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
+  host: string;
+  port: number;
+  token: string;
+  url: string;
+  close: () => Promise<void>;
+}> {
+  const existing = loadConfig();
+  const host = opts.host ?? resolveHost();
+  const port = opts.port ?? resolvePort(existing?.port);
+  const token = opts.token ?? existing?.token;
+  if (!token) {
+    throw new Error(
+      'No bearer token configured. Run `npm run pair` first, or pass token explicitly.',
+    );
+  }
+
+  const providers = createProviders();
+  const handlers = createToolHandlers(providers);
+
+  const app = createMcpExpressApp({ host });
+
+  // Health (no auth) for local probes / tunnels
+  app.get('/healthz', (_req, res) => {
+    res.status(200).json({ ok: true, service: 'session-bridge' });
+  });
+
+  app.use('/mcp', bearerAuth(token));
+
+  const createServer = () => {
+    const server = new McpServer({
+      name: 'session-bridge',
+      version: '0.1.0',
+    });
+
+    server.registerTool(
+      'list_sessions',
+      {
+        description:
+          'List coding-agent sessions. Optional provider filter: codex | claude.',
+        inputSchema: {
+          provider: z.enum(['codex', 'claude']).optional(),
+        },
+      },
+      async (args) => handlers.list_sessions(ListSessionsSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'read_transcript',
+      {
+        description: 'Read recent transcript messages for a session.',
+        inputSchema: {
+          provider: z.enum(['codex', 'claude']),
+          session_id: z.string(),
+          limit: z.number().int().positive().max(500).optional(),
+        },
+      },
+      async (args) => handlers.read_transcript(ReadTranscriptSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'send_message',
+      {
+        description: 'Send a user message into an existing session (starts a turn for Codex).',
+        inputSchema: {
+          provider: z.enum(['codex', 'claude']),
+          session_id: z.string(),
+          text: z.string(),
+        },
+      },
+      async (args) => handlers.send_message(SendMessageSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'interrupt',
+      {
+        description: 'Interrupt an in-flight turn/session.',
+        inputSchema: {
+          provider: z.enum(['codex', 'claude']),
+          session_id: z.string(),
+        },
+      },
+      async (args) => handlers.interrupt(InterruptSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'create_session',
+      {
+        description:
+          'Create a new session (Codex: thread/start). Optional cwd and initial prompt.',
+        inputSchema: {
+          provider: z.enum(['codex', 'claude']),
+          cwd: z.string().optional(),
+          prompt: z.string().optional(),
+        },
+      },
+      async (args) => handlers.create_session(CreateSessionSchema.parse(args)),
+    );
+
+    return server;
+  };
+
+  // Stateless streamable HTTP (one transport+server per request) — simple & robust for tunnels.
+  app.post('/mcp', async (req, res) => {
+    const server = createServer();
+    try {
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+      });
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+      res.on('close', () => {
+        void transport.close();
+        void server.close();
+      });
+    } catch (error) {
+      console.error('MCP request error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal server error' },
+          id: null,
+        });
+      }
+    }
+  });
+
+  app.get('/mcp', (_req, res) => {
+    res.writeHead(405).end(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Method not allowed.' },
+        id: null,
+      }),
+    );
+  });
+
+  app.delete('/mcp', (_req, res) => {
+    res.writeHead(405).end(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Method not allowed.' },
+        id: null,
+      }),
+    );
+  });
+
+  const url = mcpUrl(host, port, '/mcp');
+
+  await new Promise<void>((resolve, reject) => {
+    const httpServer = app.listen(port, host, () => resolve());
+    httpServer.on('error', reject);
+    (app as unknown as { __httpServer?: typeof httpServer }).__httpServer = httpServer;
+  });
+
+  if (!opts.quiet) {
+    console.error(`session-bridge MCP listening on ${url}`);
+    console.error(`mock=${process.env.CODEX_MOCK === '1' ? 'yes' : 'no'}`);
+  }
+
+  return {
+    host,
+    port,
+    token,
+    url,
+    close: async () => {
+      const httpServer = (app as unknown as { __httpServer?: { close: (cb: (err?: Error) => void) => void } })
+        .__httpServer;
+      if (httpServer) {
+        await new Promise<void>((resolve, reject) => {
+          httpServer.close((err) => (err ? reject(err) : resolve()));
+        });
+      }
+      for (const p of providers.all()) {
+        const maybe = p as { close?: () => Promise<void> };
+        if (maybe.close) await maybe.close();
+      }
+    },
+  };
+}
+
+// CLI entry: `npm run dev` / node dist/mcp/server.js
+const isMain =
+  process.argv[1]?.endsWith('server.ts') ||
+  process.argv[1]?.endsWith('server.js') ||
+  process.argv[1]?.includes('/mcp/server');
+
+if (isMain) {
+  const cfg: BridgeConfig | null = loadConfig();
+  startMcpServer({
+    token: process.env.SESSION_BRIDGE_TOKEN || cfg?.token,
+    port: resolvePort(cfg?.port),
+    host: resolveHost(),
+  }).catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+// silence unused import in some bundlers
