@@ -56,9 +56,15 @@ export interface CreateSessionResult {
   cwd?: string;
 }
 
+export interface SessionDetail extends SessionSummary {
+  activeTurnId?: string;
+  activeTurnStartedAt?: number;
+}
+
 export interface SessionProvider {
   readonly name: ProviderName;
   listSessions(): Promise<SessionSummary[]>;
+  getSession?(sessionId: string): Promise<SessionDetail | null>;
   readTranscript(sessionId: string, limit?: number): Promise<Transcript>;
   sendMessage(sessionId: string, text: string): Promise<SendMessageResult>;
   interrupt(sessionId: string): Promise<InterruptResult>;

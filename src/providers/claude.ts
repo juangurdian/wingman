@@ -21,6 +21,7 @@ import type {
   CreateSessionResult,
   InterruptResult,
   SendMessageResult,
+  SessionDetail,
   SessionProvider,
   SessionSummary,
   Transcript,
@@ -52,6 +53,13 @@ interface MockDiscoveredSession {
   updatedAt: number;
   items: TranscriptItem[];
   activeTurnId?: string;
+}
+
+interface ActiveTurn {
+  turnId: string;
+  sessionId: string;
+  startedAt: number;
+  abortController?: AbortController;
 }
 
 function useMock(): boolean {
@@ -118,11 +126,20 @@ export class ClaudeProvider implements SessionProvider {
 
   private mockSessions = new Map<string, MockDiscoveredSession>();
   private mockDiscovered = new Map<string, MockDiscoveredSession>();
+  private activeTurns = new Map<string, ActiveTurn>();
 
   constructor() {
     if (useMock()) {
       this.seedMockSessions();
     }
+  }
+
+  getActiveTurn(sessionId: string): ActiveTurn | undefined {
+    return this.activeTurns.get(sessionId);
+  }
+
+  getSessionStatus(sessionId: string): 'idle' | 'running' {
+    return this.activeTurns.has(sessionId) ? 'running' : 'idle';
   }
 
   private seedMockSessions(): void {
@@ -204,7 +221,7 @@ export class ClaudeProvider implements SessionProvider {
         cwd: s.cwd,
         name: s.name,
         preview: s.preview,
-        status: s.activeTurnId ? 'active' : 'idle',
+        status: this.activeTurns.has(s.id) ? 'running' : (s.activeTurnId ? 'active' : 'idle'),
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         source: 'wingman' as const,
@@ -220,7 +237,7 @@ export class ClaudeProvider implements SessionProvider {
         cwd: s.cwd,
         name: s.name,
         preview: s.preview ?? s.firstPrompt,
-        status: s.activeTurnId ? 'active' : 'idle',
+        status: this.activeTurns.has(s.id) ? 'running' : (s.activeTurnId ? 'active' : 'idle'),
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         source: 'discovered' as const,
@@ -247,7 +264,7 @@ export class ClaudeProvider implements SessionProvider {
       cwd: reg.cwd,
       name: reg.name,
       preview: reg.preview,
-      status: 'idle',
+      status: this.activeTurns.has(reg.sessionId) ? 'running' : 'idle',
       createdAt: reg.createdAt,
       updatedAt: reg.updatedAt,
       source: 'wingman' as const,
@@ -269,6 +286,20 @@ export class ClaudeProvider implements SessionProvider {
 
     merged.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
     return merged;
+  }
+
+  async getSession(sessionId: string): Promise<SessionDetail | null> {
+    const sessions = await this.listSessions();
+    const session = sessions.find((s) => s.id === sessionId);
+    if (!session) return null;
+
+    const activeTurn = this.activeTurns.get(sessionId);
+    return {
+      ...session,
+      status: activeTurn ? 'running' : 'idle',
+      activeTurnId: activeTurn?.turnId,
+      activeTurnStartedAt: activeTurn?.startedAt,
+    };
   }
 
   private async discoverViaSdk(): Promise<SessionSummary[]> {
@@ -359,46 +390,74 @@ export class ClaudeProvider implements SessionProvider {
       if (mock) {
         const turnId = `turn_mock_${randomUUID().slice(0, 8)}`;
         mock.activeTurnId = turnId;
+        this.activeTurns.set(sessionId, { turnId, sessionId, startedAt: Date.now() });
         mock.items.push({ role: 'user', text, turnId });
-        mock.items.push({
-          role: 'assistant',
-          text: `[mock Claude] Received: ${text}`,
-          turnId,
-        });
-        mock.preview = text.slice(0, 80);
-        mock.updatedAt = Date.now();
-        mock.activeTurnId = undefined;
-        return { sessionId, turnId, status: 'completed' };
+
+        setTimeout(() => {
+          mock.items.push({
+            role: 'assistant',
+            text: `[mock Claude] Received: ${text}`,
+            turnId,
+          });
+          mock.preview = text.slice(0, 80);
+          mock.updatedAt = Date.now();
+          mock.activeTurnId = undefined;
+          this.activeTurns.delete(sessionId);
+        }, 50);
+
+        return { sessionId, turnId, status: 'accepted' };
       }
       throw new Error(`Unknown mock session: ${sessionId}`);
     }
 
     const registry = loadRegistry();
     const session = registry.sessions.find((s) => s.sessionId === sessionId);
+    const turnId = `turn_${randomUUID().slice(0, 8)}`;
 
+    const activeTurn: ActiveTurn = {
+      turnId,
+      sessionId,
+      startedAt: Date.now(),
+      abortController: new AbortController(),
+    };
+    this.activeTurns.set(sessionId, activeTurn);
+
+    this.runTurnInBackground(sessionId, text, session?.cwd, activeTurn).catch((err) => {
+      console.error(`[claude] Background turn error for ${sessionId}:`, err);
+    });
+
+    return { sessionId, turnId, status: 'accepted' };
+  }
+
+  private async runTurnInBackground(
+    sessionId: string,
+    text: string,
+    cwd: string | undefined,
+    activeTurn: ActiveTurn,
+  ): Promise<void> {
     try {
       const sdk = await import('@anthropic-ai/claude-agent-sdk');
-
-      let turnId: string | undefined;
-      let status = 'inProgress';
 
       const queryGen = sdk.query({
         prompt: text,
         options: {
           resume: sessionId,
-          cwd: session?.cwd,
+          cwd,
           maxTurns: 1,
         },
       });
 
       for await (const msg of queryGen) {
+        if (activeTurn.abortController?.signal.aborted) {
+          break;
+        }
         if (msg.type === 'result') {
-          turnId = msg.session_id;
-          status = msg.subtype === 'success' ? 'completed' : msg.subtype;
           break;
         }
       }
 
+      const registry = loadRegistry();
+      const session = registry.sessions.find((s) => s.sessionId === sessionId);
       if (!session) {
         const info = await sdk.getSessionInfo(sessionId);
         if (info) {
@@ -414,11 +473,8 @@ export class ClaudeProvider implements SessionProvider {
       } else {
         updateSessionTimestamp(sessionId);
       }
-
-      return { sessionId, turnId, status };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`Failed to send message to Claude session: ${msg}`);
+    } finally {
+      this.activeTurns.delete(sessionId);
     }
   }
 
@@ -426,8 +482,15 @@ export class ClaudeProvider implements SessionProvider {
     if (useMock()) {
       const mock = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
       if (mock) {
-        const turnId = mock.activeTurnId;
+        const activeTurn = this.activeTurns.get(sessionId);
+        const turnId = activeTurn?.turnId ?? mock.activeTurnId;
+
+        if (activeTurn) {
+          activeTurn.abortController?.abort();
+          this.activeTurns.delete(sessionId);
+        }
         mock.activeTurnId = undefined;
+
         mock.items.push({
           role: 'system',
           text: '[mock] Interrupted',
@@ -438,10 +501,23 @@ export class ClaudeProvider implements SessionProvider {
       throw new Error(`Unknown mock session: ${sessionId}`);
     }
 
-    throw new Error(
-      'Claude interrupt requires an active query handle. ' +
-        'Call send_message and interrupt via the returned Query object, or use the Claude CLI directly.',
-    );
+    const activeTurn = this.activeTurns.get(sessionId);
+    if (!activeTurn) {
+      return {
+        sessionId,
+        turnId: undefined,
+        status: 'no_active_turn',
+      };
+    }
+
+    activeTurn.abortController?.abort();
+    this.activeTurns.delete(sessionId);
+
+    return {
+      sessionId,
+      turnId: activeTurn.turnId,
+      status: 'interrupted',
+    };
   }
 
   async createSession(opts?: { cwd?: string; prompt?: string }): Promise<CreateSessionResult> {

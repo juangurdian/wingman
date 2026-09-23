@@ -36,7 +36,7 @@ describe('ClaudeProvider mock mode', () => {
     expect(sessions.some(s => s.id === result.sessionId)).toBe(true);
   });
 
-  it('sendMessage adds items to mock session', async () => {
+  it('sendMessage returns accepted and processes in background', async () => {
     const { ClaudeProvider } = await import('../src/providers/claude.js');
     const provider = new ClaudeProvider();
     
@@ -46,11 +46,16 @@ describe('ClaudeProvider mock mode', () => {
     const result = await provider.sendMessage(sessionId, 'Test message');
     
     expect(result.sessionId).toBe(sessionId);
-    expect(result.status).toBe('completed');
+    expect(result.status).toBe('accepted');
+    expect(result.turnId).toBeDefined();
     
     const transcript = await provider.readTranscript(sessionId, 50);
     expect(transcript.items.some(i => i.text === 'Test message')).toBe(true);
-    expect(transcript.items.some(i => i.text.includes('[mock Claude]'))).toBe(true);
+    
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    const transcriptAfter = await provider.readTranscript(sessionId, 50);
+    expect(transcriptAfter.items.some(i => i.text.includes('[mock Claude]'))).toBe(true);
   });
 
   it('readTranscript returns items for mock session', async () => {

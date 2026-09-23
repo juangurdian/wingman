@@ -30,6 +30,11 @@ export const CreateSessionSchema = z.object({
   prompt: z.string().optional(),
 });
 
+export const GetSessionSchema = z.object({
+  provider: ProviderSchema,
+  session_id: z.string().min(1),
+});
+
 function textResult(data: unknown) {
   return {
     content: [
@@ -121,6 +126,22 @@ export function createToolHandlers(providers: ProviderRegistry) {
           cwd: args.cwd,
           prompt: args.prompt,
         });
+        return textResult(result);
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+
+    async get_session(args: z.infer<typeof GetSessionSchema>) {
+      try {
+        const provider = providers.get(args.provider);
+        if (!provider.getSession) {
+          return errorResult(`get_session not supported for ${args.provider}`);
+        }
+        const result = await provider.getSession(args.session_id);
+        if (!result) {
+          return errorResult(`Session not found: ${args.session_id}`);
+        }
         return textResult(result);
       } catch (err) {
         return errorResult(err);

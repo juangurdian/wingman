@@ -21,6 +21,7 @@ import type {
   CreateSessionResult,
   InterruptResult,
   SendMessageResult,
+  SessionDetail,
   SessionProvider,
   SessionSummary,
   Transcript,
@@ -114,6 +115,36 @@ export class CodexProvider implements SessionProvider {
       createdAt: typeof t.createdAt === 'number' ? t.createdAt : undefined,
       updatedAt: typeof t.updatedAt === 'number' ? t.updatedAt : undefined,
     }));
+  }
+
+  async getSession(sessionId: string): Promise<SessionDetail | null> {
+    if (useMock()) {
+      const s = this.mockSessions.get(sessionId);
+      if (!s) return null;
+      const activeTurnId = this.activeTurns.get(sessionId);
+      return {
+        id: s.id,
+        provider: 'codex',
+        cwd: s.cwd,
+        name: s.name,
+        preview: s.preview,
+        status: activeTurnId ? 'running' : (s.activeTurnId ? 'active' : 'idle'),
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+        activeTurnId: activeTurnId ?? s.activeTurnId,
+      };
+    }
+
+    const sessions = await this.listSessions();
+    const session = sessions.find((s) => s.id === sessionId);
+    if (!session) return null;
+
+    const activeTurnId = this.activeTurns.get(sessionId);
+    return {
+      ...session,
+      status: activeTurnId ? 'running' : session.status,
+      activeTurnId,
+    };
   }
 
   async readTranscript(sessionId: string, limit = 50): Promise<Transcript> {
