@@ -61,11 +61,13 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | Feature | Description |
 |---------|-------------|
 | Claude Channels / live-visible path | Real-time streaming via SSE when Claude supports it |
-| Multi-host guides | How to pair with Claude Desktop, OpenAI Realtime, etc. |
+| Multi-host guides | ✅ Shipped — see [`docs/hosts/`](docs/hosts/) for Cursor, Claude Desktop (with limitations), generic clients |
 | Named sessions | Human-friendly session names across providers |
 | Session export | Export transcript as Markdown/JSON |
 | Web dashboard | Local-only status page for paired sessions |
 | Plugin architecture | Provider plugins beyond Codex/Claude |
+
+> **Multi-host guides note**: Claude Desktop support is documented as limited — it uses stdio-based MCP, not HTTP. The guide includes honest documentation of workarounds. Cursor IDE and remote hosts (Grok Bot) have full support.
 
 ## Non-Goals
 
