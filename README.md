@@ -8,6 +8,8 @@ Dual-provider: Codex (app-server) + Claude Code (Agent SDK).
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](tsconfig.json)
 
+See **[ROADMAP.md](ROADMAP.md)** for positioning, backlog, and non-goals.
+
 ---
 
 ## Why Wingman?
@@ -69,6 +71,10 @@ Docs: [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [Claude A
 - Pair in **mock mode** with no agent install (`CODEX_MOCK=1` or `CLAUDE_MOCK=1`)
 - Bridge Grok Bot ↔ local Codex threads via app-server once tunneled
 - Bridge Grok Bot ↔ local Claude Code sessions via Agent SDK once tunneled
+- **Discover existing Claude sessions** via SDK's `listSessions()` (sessions you created via `claude` CLI or Claude Code IDE)
+- Resume discovered sessions by ID — the SDK reads session state from `~/.claude/projects/`
+- Send messages to sessions asynchronously (returns `accepted` quickly; turn runs in background)
+- Check session status (idle vs running) via `get_session` or `list_sessions`
 - Bearer-protect the MCP HTTP endpoint
 - Create / list / read / message / interrupt sessions (real or mock) for both providers
 - Keep you in the loop — the session stays visible on your machine
@@ -76,7 +82,9 @@ Docs: [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [Claude A
 **Can't (scope / v1 limits)**
 
 - Reach the bridge from a remote host without a **tunnel** (binds loopback only)
-- Hijack arbitrary Claude / Codex TTYs you already have open elsewhere — Wingman manages sessions it creates, not random interactive shells
+- **Type into an open TTY** — SDK resume ≠ injecting keystrokes into a Claude/Codex terminal you're watching; Wingman calls SDK APIs that operate on session state files, not terminal processes
+- Hijack arbitrary Claude / Codex TTYs you already have open elsewhere — Wingman manages sessions via SDK, not by attaching to interactive shells
+- Interrupt a discovered session reliably unless Wingman started the current turn (no active query handle)
 - Auto-approve sandbox prompts (approvals still belong to the local agent client)
 - Use legacy `codex mcp-server` (removed / not used here)
 
@@ -102,11 +110,18 @@ flowchart LR
 
 | Tool | Args | Notes |
 |------|------|--------|
-| `list_sessions` | `provider?`: `codex` \| `claude` | Lists sessions for one or both providers |
-| `read_transcript` | `provider`, `session_id`, `limit?` | Recent messages |
-| `send_message` | `provider`, `session_id`, `text` | Codex: `turn/start`; Claude: `query({resume})` |
-| `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`; Claude: `query.interrupt()` |
+| `list_sessions` | `provider?`: `codex` \| `claude` | Lists sessions for one or both providers (includes `status`, `source`) |
+| `get_session` | `provider`, `session_id` | Get detailed session info including status (`idle` / `running`) |
+| `read_transcript` | `provider`, `session_id`, `limit?` | Recent messages (newest at end) |
+| `send_message` | `provider`, `session_id`, `text` | Codex: `turn/start`; Claude: returns `accepted` quickly, turn runs async |
+| `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`; Claude: works when Wingman owns the active turn |
 | `create_session` | `provider`, `cwd?`, `prompt?` | Codex: `thread/start`; Claude: new SDK query with sessionId |
+
+### send_message behavior
+
+For **Claude sessions**, `send_message` returns immediately with `{ status: "accepted", turnId }` while the SDK query runs in the background. Use `get_session` or `read_transcript` to observe progress. This prevents MCP HTTP timeouts during long model turns.
+
+For **Codex sessions**, `send_message` blocks until `turn/start` returns (typically fast), then returns `{ status: "completed" | "inProgress" }`.
 
 ## Environment variables
 
@@ -180,6 +195,7 @@ Claude sessions are stored by the Agent SDK in `~/.claude/projects/<project-key>
 | Script | Purpose |
 |--------|---------|
 | `npm run pair` | Generate token, save config, start MCP, print pair instructions (`wingman-pair` bin) |
+| `npm run doctor` | Check environment: Node version, config, port, Claude SDK / Codex binary |
 | `npm run dev` | Start MCP only (needs existing config/token) |
 | `npm run build` | Compile TypeScript → `dist/` |
 | `npm test` | Vitest unit tests (mocked providers) |
@@ -198,6 +214,23 @@ Claude sessions are stored by the Agent SDK in `~/.claude/projects/<project-key>
   "mock": true
 }
 ```
+
+## Doctor / Health Check
+
+Run `npm run doctor` (or `wingman-pair --doctor`) to verify your environment:
+
+```bash
+npm run doctor
+```
+
+Checks:
+- Node.js version (20+ required)
+- Config file (`~/.wingman/config.json`)
+- Port availability (3847 by default)
+- Claude Agent SDK availability (unless `CLAUDE_MOCK=1`)
+- Codex binary on PATH (unless `CODEX_MOCK=1`)
+
+The doctor prints clear next steps if any check fails.
 
 ## Agent skill
 
