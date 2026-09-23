@@ -50,6 +50,45 @@ wingman-pair
 
 This generates a new token. Update your MCP host configuration with the new token.
 
+**Rotation best practices:**
+- Rotate tokens after sharing them in demos or screenshots (even if redacted)
+- Rotate if you suspect the token was exposed (logs, error messages, etc.)
+- Consider rotating monthly for long-running deployments
+- After rotation, update all MCP host configurations that use this token
+
+### Tunnel State
+
+Wingman persists tunnel-related state in `~/.wingman/tunnel-state.json`:
+
+```json
+{
+  "lastPublicUrl": "https://abc.trycloudflare.com/mcp",
+  "lastTunnelType": "quick-tunnel",
+  "tokenHintPath": "~/.wingman/config.json",
+  "updatedAt": "2024-01-01T00:00:00.000Z"
+}
+```
+
+**What's stored:**
+- `lastPublicUrl`: The last known public tunnel URL (for reference only)
+- `lastTunnelType`: The type of tunnel used (tailscale-serve, named-cloudflare, quick-tunnel)
+- `tokenHintPath`: Path to the config file containing the token
+- `updatedAt`: When the state was last updated
+
+**No secrets stored**: The tunnel state file does not contain tokens or credentials. The bearer token is only stored in `~/.wingman/config.json` (with mode `0600`).
+
+To record a new tunnel URL for future reference:
+
+```bash
+wingman-tunnel --record-url https://your-tunnel-url.com/mcp
+```
+
+To view saved tunnel state:
+
+```bash
+wingman-tunnel --show-state
+```
+
 ### Tunnel Security
 
 When exposing Wingman via a tunnel:

@@ -95,19 +95,35 @@ Mock mode:      ${mockDisplay}
 TUNNEL SETUP (required for remote access)
 
 Remote hosts (Grok Bot, Cursor Cloud, etc.) cannot reach 127.0.0.1.
-Pick one tunnel option:
+Pick one tunnel option, ranked by durability:
 
-  ┌─ Cloudflare Tunnel (quick, ephemeral URL) ─────────────────────┐
-  │  cloudflared tunnel --url http://${cfg.host}:${cfg.port}                       │
-  │  → Gives you a URL like https://abc.trycloudflare.com          │
+  ┌─ 1. Tailscale Serve (stable, loopback to your network) ────────┐
+  │  tailscale serve --bg ${cfg.port}                                      │
+  │  → Your Tailscale network can reach https://<machine>.ts.net   │
+  │  → URL stays the same across restarts                          │
   └────────────────────────────────────────────────────────────────┘
 
-  ┌─ Tailscale Funnel (stable, requires Tailscale) ────────────────┐
+  ┌─ 2. Tailscale Funnel (stable, public) ─────────────────────────┐
   │  tailscale funnel ${cfg.port}                                          │
-  │  → Gives you a URL like https://yourhost.ts.net                │
+  │  → Public URL: https://<machine>.ts.net (requires Funnel ACL)  │
+  │  → URL stays the same across restarts                          │
+  └────────────────────────────────────────────────────────────────┘
+
+  ┌─ 3. Cloudflare Named Tunnel (stable, custom domain) ───────────┐
+  │  cloudflared tunnel run <TUNNEL_NAME>                          │
+  │  → Stable hostname like https://wingman.yourdomain.com         │
+  │  → One-time setup: run 'wingman-tunnel' for instructions       │
+  └────────────────────────────────────────────────────────────────┘
+
+  ┌─ 4. Cloudflare Quick Tunnel (ephemeral, for demos) ────────────┐
+  │  cloudflared tunnel --url http://${cfg.host}:${cfg.port}                       │
+  │  → Gives you a URL like https://abc.trycloudflare.com          │
+  │  → ⚠ URL changes every restart — use for demos only            │
   └────────────────────────────────────────────────────────────────┘
 
 Then append /mcp to your tunnel URL (e.g., https://abc.trycloudflare.com/mcp).
+
+For detailed setup help: wingman-tunnel (or: npm run tunnel)
 
 ────────────────────────────────────────────────────────────────────
 MCP SERVER CONFIG (for Grok Bot / Cursor / other MCP hosts)
@@ -136,8 +152,8 @@ Both Codex and Claude sessions are supported via the same bridge.
 ────────────────────────────────────────────────────────────────────
 TROUBLESHOOTING
 
-  If something isn't working, run:    wingman-doctor
-  (or: npm run doctor)
+  Environment check:    wingman-doctor   (or: npm run doctor)
+  Tunnel help:          wingman-tunnel   (or: npm run tunnel)
 
 Ctrl+C to stop the bridge.
 `);
