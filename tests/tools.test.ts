@@ -1,5 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createToolHandlers } from '../src/mcp/tools.js';
+import { existsSync, rmSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type {
   SessionProvider,
   SessionSummary,
@@ -1081,5 +1084,180 @@ describe('tool handlers for set_session_meta', () => {
     expect(created).toBeDefined();
     expect(created.name).toBe('Named Session');
     expect(created.tags).toEqual(['created', 'with-tags']);
+  });
+});
+
+describe('export_transcript tool', () => {
+  let codex: MockCodex;
+  let claude: MockClaudeEnabled;
+  let handlers: ReturnType<typeof createToolHandlers>;
+  const exportDir = join(homedir(), '.wingman', 'exports');
+  const createdFiles: string[] = [];
+
+  beforeEach(() => {
+    codex = new MockCodex();
+    claude = new MockClaudeEnabled();
+    handlers = createToolHandlers(registry(codex, claude));
+  });
+
+  afterEach(() => {
+    for (const file of createdFiles) {
+      if (existsSync(file)) {
+        rmSync(file);
+      }
+    }
+    createdFiles.length = 0;
+  });
+
+  it('exports codex transcript as markdown', async () => {
+    await handlers.send_message({ provider: 'codex', session_id: 'thr_test_1', text: 'hello' });
+    
+    const res = await handlers.export_transcript({
+      provider: 'codex',
+      session_id: 'thr_test_1',
+      format: 'markdown',
+    });
+    expect(res.isError).toBeUndefined();
+
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessionId).toBe('thr_test_1');
+    expect(body.provider).toBe('codex');
+    expect(body.format).toBe('markdown');
+    expect(body.path).toMatch(/\.md$/);
+    expect(body.content).toContain('# Session Transcript');
+    expect(body.content).toContain('hello');
+    expect(existsSync(body.path)).toBe(true);
+    createdFiles.push(body.path);
+  });
+
+  it('exports codex transcript as json', async () => {
+    await handlers.send_message({ provider: 'codex', session_id: 'thr_test_1', text: 'test json' });
+    
+    const res = await handlers.export_transcript({
+      provider: 'codex',
+      session_id: 'thr_test_1',
+      format: 'json',
+    });
+    expect(res.isError).toBeUndefined();
+
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.format).toBe('json');
+    expect(body.path).toMatch(/\.json$/);
+    
+    const exportedContent = JSON.parse(body.content);
+    expect(exportedContent.sessionId).toBe('thr_test_1');
+    expect(exportedContent.provider).toBe('codex');
+    expect(exportedContent.items).toBeInstanceOf(Array);
+    expect(existsSync(body.path)).toBe(true);
+    createdFiles.push(body.path);
+  });
+
+  it('exports claude transcript as markdown', async () => {
+    const res = await handlers.export_transcript({
+      provider: 'claude',
+      session_id: 'claude_test_1',
+      format: 'markdown',
+    });
+    expect(res.isError).toBeUndefined();
+
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessionId).toBe('claude_test_1');
+    expect(body.provider).toBe('claude');
+    expect(body.format).toBe('markdown');
+    expect(body.content).toContain('# Session Transcript');
+    expect(body.content).toContain('hello claude');
+    expect(existsSync(body.path)).toBe(true);
+    createdFiles.push(body.path);
+  });
+
+  it('exports claude transcript as json', async () => {
+    const res = await handlers.export_transcript({
+      provider: 'claude',
+      session_id: 'claude_test_1',
+      format: 'json',
+    });
+    expect(res.isError).toBeUndefined();
+
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.format).toBe('json');
+    
+    const exportedContent = JSON.parse(body.content);
+    expect(exportedContent.sessionId).toBe('claude_test_1');
+    expect(exportedContent.items.length).toBe(2);
+    expect(existsSync(body.path)).toBe(true);
+    createdFiles.push(body.path);
+  });
+
+  it('respects limit parameter', async () => {
+    for (let i = 0; i < 5; i++) {
+      await handlers.send_message({ provider: 'codex', session_id: 'thr_test_1', text: `msg ${i}` });
+    }
+    
+    const res = await handlers.export_transcript({
+      provider: 'codex',
+      session_id: 'thr_test_1',
+      format: 'json',
+      limit: 3,
+    });
+    expect(res.isError).toBeUndefined();
+
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.itemCount).toBe(3);
+    
+    const exportedContent = JSON.parse(body.content);
+    expect(exportedContent.items.length).toBe(3);
+    createdFiles.push(body.path);
+  });
+
+  it('returns error for unknown session', async () => {
+    const res = await handlers.export_transcript({
+      provider: 'claude',
+      session_id: 'nonexistent',
+      format: 'markdown',
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toMatch(/unknown session/i);
+  });
+
+  it('markdown format includes role labels', async () => {
+    const res = await handlers.export_transcript({
+      provider: 'claude',
+      session_id: 'claude_test_1',
+      format: 'markdown',
+    });
+    expect(res.isError).toBeUndefined();
+
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.content).toContain('### User');
+    expect(body.content).toContain('### Assistant');
+    createdFiles.push(body.path);
+  });
+
+  it('json format includes exportedAt timestamp', async () => {
+    const res = await handlers.export_transcript({
+      provider: 'claude',
+      session_id: 'claude_test_1',
+      format: 'json',
+    });
+    expect(res.isError).toBeUndefined();
+
+    const body = JSON.parse(res.content[0]!.text);
+    const exportedContent = JSON.parse(body.content);
+    expect(exportedContent.exportedAt).toBeDefined();
+    expect(new Date(exportedContent.exportedAt).getTime()).toBeGreaterThan(0);
+    createdFiles.push(body.path);
+  });
+
+  it('creates export directory if not exists', async () => {
+    const res = await handlers.export_transcript({
+      provider: 'codex',
+      session_id: 'thr_test_1',
+      format: 'json',
+    });
+    expect(res.isError).toBeUndefined();
+
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.path.startsWith(exportDir)).toBe(true);
+    createdFiles.push(body.path);
   });
 });

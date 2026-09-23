@@ -63,7 +63,7 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | Claude Channels / live-visible path | Real-time streaming via SSE when Claude supports it |
 | Multi-host guides | ✅ Shipped — see [`docs/hosts/`](docs/hosts/) for Cursor, Claude Desktop (with limitations), generic clients |
 | Named sessions | Human-friendly session names across providers |
-| Session export | Export transcript as Markdown/JSON |
+| Session export | ✅ Shipped — `export_transcript` tool exports as Markdown/JSON to `~/.wingman/exports/` |
 | Web dashboard | Local-only status page for paired sessions |
 | Plugin architecture | Provider plugins beyond Codex/Claude |
 
