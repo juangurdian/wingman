@@ -529,40 +529,25 @@ export class ClaudeProvider implements SessionProvider {
       });
 
       if (opts?.prompt) {
-        await this.sendMessage(s.id, opts.prompt);
+        const sendResult = await this.sendMessage(s.id, opts.prompt);
+        return {
+          sessionId: s.id,
+          provider: 'claude',
+          cwd: s.cwd,
+          status: 'accepted',
+          turnId: sendResult.turnId,
+        };
       }
 
-      return { sessionId: s.id, provider: 'claude', cwd: s.cwd };
+      return { sessionId: s.id, provider: 'claude', cwd: s.cwd, status: 'created' };
     }
 
     try {
-      const sdk = await import('@anthropic-ai/claude-agent-sdk');
-
       const sessionId: string = randomUUID();
-      let resultSessionId: string = sessionId;
-
-      const queryGen = sdk.query({
-        prompt: opts?.prompt ?? '',
-        options: {
-          sessionId: sessionId as `${string}-${string}-${string}-${string}-${string}`,
-          cwd: opts?.cwd,
-          maxTurns: opts?.prompt ? 1 : 0,
-        },
-      });
-
-      for await (const msg of queryGen) {
-        if (msg.type === 'system' && 'session_id' in msg) {
-          resultSessionId = (msg as { session_id?: string }).session_id ?? sessionId;
-        }
-        if (msg.type === 'result') {
-          resultSessionId = msg.session_id ?? resultSessionId;
-          break;
-        }
-      }
-
       const now = Date.now();
+
       registerSession({
-        sessionId: resultSessionId,
+        sessionId,
         cwd: opts?.cwd ?? process.cwd(),
         name: opts?.prompt?.slice(0, 40) || 'Wingman session',
         preview: opts?.prompt?.slice(0, 80),
@@ -570,10 +555,68 @@ export class ClaudeProvider implements SessionProvider {
         updatedAt: now,
       });
 
-      return { sessionId: resultSessionId, provider: 'claude', cwd: opts?.cwd };
+      if (opts?.prompt) {
+        const turnId = `turn_${randomUUID().slice(0, 8)}`;
+        const activeTurn: ActiveTurn = {
+          turnId,
+          sessionId,
+          startedAt: now,
+          abortController: new AbortController(),
+        };
+        this.activeTurns.set(sessionId, activeTurn);
+
+        this.runInitialTurnInBackground(sessionId, opts.prompt, opts.cwd, activeTurn).catch(
+          (err) => {
+            console.error(`[claude] Background initial turn error for ${sessionId}:`, err);
+          },
+        );
+
+        return {
+          sessionId,
+          provider: 'claude',
+          cwd: opts?.cwd,
+          status: 'accepted',
+          turnId,
+        };
+      }
+
+      return { sessionId, provider: 'claude', cwd: opts?.cwd, status: 'created' };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`Failed to create Claude session: ${msg}`);
+    }
+  }
+
+  private async runInitialTurnInBackground(
+    sessionId: string,
+    prompt: string,
+    cwd: string | undefined,
+    activeTurn: ActiveTurn,
+  ): Promise<void> {
+    try {
+      const sdk = await import('@anthropic-ai/claude-agent-sdk');
+
+      const queryGen = sdk.query({
+        prompt,
+        options: {
+          sessionId: sessionId as `${string}-${string}-${string}-${string}-${string}`,
+          cwd,
+          maxTurns: 1,
+        },
+      });
+
+      for await (const msg of queryGen) {
+        if (activeTurn.abortController?.signal.aborted) {
+          break;
+        }
+        if (msg.type === 'result') {
+          break;
+        }
+      }
+
+      updateSessionTimestamp(sessionId);
+    } finally {
+      this.activeTurns.delete(sessionId);
     }
   }
 }

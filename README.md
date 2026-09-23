@@ -115,7 +115,15 @@ flowchart LR
 | `read_transcript` | `provider`, `session_id`, `limit?` | Recent messages (newest at end) |
 | `send_message` | `provider`, `session_id`, `text` | Codex: `turn/start`; Claude: returns `accepted` quickly, turn runs async |
 | `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`; Claude: works when Wingman owns the active turn |
-| `create_session` | `provider`, `cwd?`, `prompt?` | Codex: `thread/start`; Claude: new SDK query with sessionId |
+| `create_session` | `provider`, `cwd?`, `prompt?` | Codex: `thread/start`; Claude: new session with optional initial prompt (async) |
+
+### create_session behavior
+
+For **Claude sessions**, `create_session` returns immediately:
+- **Without prompt**: Returns `{ sessionId, status: "created" }` — session is registered but no turn is running
+- **With prompt**: Returns `{ sessionId, status: "accepted", turnId }` — the initial prompt turn runs in the background, preventing MCP HTTP timeouts
+
+For **Codex sessions**, `create_session` calls `thread/start` and returns `{ sessionId, status: "created" | "accepted" }`.
 
 ### send_message behavior
 

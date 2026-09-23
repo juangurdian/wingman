@@ -54,6 +54,10 @@ export interface CreateSessionResult {
   sessionId: string;
   provider: ProviderName;
   cwd?: string;
+  /** Status: 'created' (no prompt), 'accepted' (prompt started in background) */
+  status?: 'created' | 'accepted';
+  /** Turn ID when prompt is provided and status is 'accepted' */
+  turnId?: string;
 }
 
 export interface SessionDetail extends SessionSummary {
