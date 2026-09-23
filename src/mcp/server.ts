@@ -15,6 +15,7 @@ import {
   SendMessageSchema,
   InterruptSchema,
   CreateSessionSchema,
+  GetSessionSchema,
 } from './tools.js';
 import { bearerAuth } from './auth.js';
 import { createProviders } from '../providers/index.js';
@@ -135,6 +136,19 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
         },
       },
       async (args) => handlers.create_session(CreateSessionSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'get_session',
+      {
+        description:
+          'Get detailed session info including status (idle/running), active turn ID, and timestamps.',
+        inputSchema: {
+          provider: z.enum(['codex', 'claude']),
+          session_id: z.string(),
+        },
+      },
+      async (args) => handlers.get_session(GetSessionSchema.parse(args)),
     );
 
     return server;

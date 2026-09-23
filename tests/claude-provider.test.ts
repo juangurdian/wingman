@@ -36,7 +36,7 @@ describe('ClaudeProvider mock mode', () => {
     expect(sessions.some(s => s.id === result.sessionId)).toBe(true);
   });
 
-  it('sendMessage adds items to mock session', async () => {
+  it('sendMessage returns accepted and processes in background', async () => {
     const { ClaudeProvider } = await import('../src/providers/claude.js');
     const provider = new ClaudeProvider();
     
@@ -46,11 +46,16 @@ describe('ClaudeProvider mock mode', () => {
     const result = await provider.sendMessage(sessionId, 'Test message');
     
     expect(result.sessionId).toBe(sessionId);
-    expect(result.status).toBe('completed');
+    expect(result.status).toBe('accepted');
+    expect(result.turnId).toBeDefined();
     
     const transcript = await provider.readTranscript(sessionId, 50);
     expect(transcript.items.some(i => i.text === 'Test message')).toBe(true);
-    expect(transcript.items.some(i => i.text.includes('[mock Claude]'))).toBe(true);
+    
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    const transcriptAfter = await provider.readTranscript(sessionId, 50);
+    expect(transcriptAfter.items.some(i => i.text.includes('[mock Claude]'))).toBe(true);
   });
 
   it('readTranscript returns items for mock session', async () => {
@@ -85,5 +90,146 @@ describe('ClaudeProvider mock mode', () => {
     const provider = new ClaudeProvider();
     
     await expect(provider.readTranscript('nonexistent')).rejects.toThrow(/unknown mock session/i);
+  });
+
+  it('readTranscript returns messages in chronological order (oldest first, newest last)', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+      prompt: 'First message',
+    });
+    
+    await new Promise(resolve => setTimeout(resolve, 60));
+    
+    await provider.sendMessage(result.sessionId, 'Second message');
+    await new Promise(resolve => setTimeout(resolve, 60));
+    
+    await provider.sendMessage(result.sessionId, 'Third message');
+    await new Promise(resolve => setTimeout(resolve, 60));
+    
+    const transcript = await provider.readTranscript(result.sessionId, 50);
+    
+    const userMessages = transcript.items.filter(i => i.role === 'user').map(i => i.text);
+    expect(userMessages).toEqual(['First message', 'Second message', 'Third message']);
+    
+    const firstUserIndex = transcript.items.findIndex(i => i.role === 'user' && i.text === 'First message');
+    const lastUserIndex = transcript.items.findIndex(i => i.role === 'user' && i.text === 'Third message');
+    expect(firstUserIndex).toBeLessThan(lastUserIndex);
+  });
+
+  it('readTranscript with limit returns most recent messages', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+      prompt: 'Message 1',
+    });
+    
+    await new Promise(resolve => setTimeout(resolve, 60));
+    await provider.sendMessage(result.sessionId, 'Message 2');
+    await new Promise(resolve => setTimeout(resolve, 60));
+    await provider.sendMessage(result.sessionId, 'Message 3');
+    await new Promise(resolve => setTimeout(resolve, 60));
+    
+    const transcript = await provider.readTranscript(result.sessionId, 4);
+    
+    const userMessages = transcript.items.filter(i => i.role === 'user').map(i => i.text);
+    expect(userMessages.includes('Message 3')).toBe(true);
+    expect(userMessages[userMessages.length - 1]).toBe('Message 3');
+  });
+
+  it('getSession returns session details with status', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const sessions = await provider.listSessions();
+    const sessionId = sessions[0].id;
+    
+    const session = await provider.getSession(sessionId);
+    
+    expect(session).not.toBeNull();
+    expect(session?.id).toBe(sessionId);
+    expect(session?.provider).toBe('claude');
+    expect(session?.status).toBe('idle');
+  });
+
+  it('getSession shows running status during active turn', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+    });
+    
+    const sendPromise = provider.sendMessage(result.sessionId, 'test');
+    
+    const session = await provider.getSession(result.sessionId);
+    expect(session?.status).toBe('running');
+    expect(session?.activeTurnId).toBeDefined();
+    
+    await sendPromise;
+    await new Promise(resolve => setTimeout(resolve, 60));
+    
+    const sessionAfter = await provider.getSession(result.sessionId);
+    expect(sessionAfter?.status).toBe('idle');
+  });
+
+  it('interrupt stops active turn and returns turnId', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+    });
+    
+    const sendResult = await provider.sendMessage(result.sessionId, 'long task');
+    expect(sendResult.status).toBe('accepted');
+    
+    const interruptResult = await provider.interrupt(result.sessionId);
+    
+    expect(interruptResult.sessionId).toBe(result.sessionId);
+    expect(interruptResult.status).toBe('interrupted');
+    expect(interruptResult.turnId).toBeDefined();
+    
+    const session = await provider.getSession(result.sessionId);
+    expect(session?.status).toBe('idle');
+  });
+
+  it('interrupt returns no_active_turn when session is idle', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+    });
+    
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    const interruptResult = await provider.interrupt(result.sessionId);
+    
+    expect(interruptResult.sessionId).toBe(result.sessionId);
+    expect(interruptResult.status).toBe('interrupted');
+  });
+
+  it('getSessionStatus returns correct status', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    
+    const result = await provider.createSession({
+      cwd: '/tmp/test',
+    });
+    
+    expect(provider.getSessionStatus(result.sessionId)).toBe('idle');
+    
+    const sendPromise = provider.sendMessage(result.sessionId, 'test');
+    expect(provider.getSessionStatus(result.sessionId)).toBe('running');
+    
+    await sendPromise;
+    await new Promise(resolve => setTimeout(resolve, 60));
+    
+    expect(provider.getSessionStatus(result.sessionId)).toBe('idle');
   });
 });

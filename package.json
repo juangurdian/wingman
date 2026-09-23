@@ -1,7 +1,7 @@
 {
   "name": "wingman-mcp",
   "version": "0.1.0",
-  "description": "Your coding agent's wingman — TypeScript MCP bridge + pair CLI so Grok Bot (and other MCP hosts) can talk to live Codex sessions on your machine",
+  "description": "Your coding agent's wingman — TypeScript MCP bridge + pair CLI so Grok Bot (and other MCP hosts) can talk to live Codex and Claude Code sessions on your machine",
   "type": "module",
   "main": "dist/mcp/server.js",
   "bin": {
@@ -11,6 +11,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/mcp/server.ts",
     "pair": "tsx src/pair.ts",
+    "doctor": "tsx src/doctor.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

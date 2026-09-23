@@ -3,6 +3,7 @@ import { createToolHandlers } from '../src/mcp/tools.js';
 import type {
   SessionProvider,
   SessionSummary,
+  SessionDetail,
   Transcript,
   TranscriptItem,
   SendMessageResult,
@@ -26,6 +27,11 @@ class MockCodex implements SessionProvider {
 
   async listSessions() {
     return this.sessions;
+  }
+  async getSession(sessionId: string): Promise<SessionDetail | null> {
+    const session = this.sessions.find((s) => s.id === sessionId);
+    if (!session) return null;
+    return { ...session, status: 'idle' };
   }
   async readTranscript(sessionId: string, limit = 50): Promise<Transcript> {
     return {
@@ -147,6 +153,12 @@ class MockClaudeWithDiscovery implements SessionProvider {
     this.transcripts.set(id, []);
     return { sessionId: id, provider: 'claude', cwd: opts?.cwd };
   }
+  async getSession(sessionId: string): Promise<SessionDetail | null> {
+    const sessions = await this.listSessions();
+    const session = sessions.find((s) => s.id === sessionId);
+    if (!session) return null;
+    return { ...session, status: 'idle' };
+  }
 }
 
 class MockClaudeDisabled implements SessionProvider {
@@ -227,6 +239,11 @@ class MockClaudeEnabled implements SessionProvider {
       this.items.push({ role: 'assistant', text: '[mock] Session started', turnId: 'turn_init' });
     }
     return { sessionId: id, provider: 'claude', cwd: opts?.cwd };
+  }
+  async getSession(sessionId: string): Promise<SessionDetail | null> {
+    const session = this.sessions.find((s) => s.id === sessionId);
+    if (!session) return null;
+    return { ...session, status: this.activeTurnId ? 'running' : 'idle', activeTurnId: this.activeTurnId };
   }
 }
 
@@ -406,6 +423,27 @@ describe('tool handlers with mocked Claude provider (enabled)', () => {
     });
     expect(res.isError).toBe(true);
     expect(res.content[0]!.text).toMatch(/unknown session/i);
+  });
+
+  it('get_session returns session details', async () => {
+    const res = await handlers.get_session({
+      provider: 'claude',
+      session_id: 'claude_test_1',
+    });
+    expect(res.isError).toBeUndefined();
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.id).toBe('claude_test_1');
+    expect(body.provider).toBe('claude');
+    expect(body.status).toBeDefined();
+  });
+
+  it('get_session returns error for unknown session', async () => {
+    const res = await handlers.get_session({
+      provider: 'claude',
+      session_id: 'nonexistent',
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toMatch(/not found/i);
   });
 });
 
