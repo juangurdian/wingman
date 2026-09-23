@@ -1,11 +1,11 @@
 {
-  "name": "session-bridge",
+  "name": "wingman-mcp",
   "version": "0.1.0",
-  "description": "TypeScript MCP bridge + pair CLI so Grok Bot can talk to Codex (and stub Claude) sessions on a user's machine",
+  "description": "Your coding agent's wingman — TypeScript MCP bridge + pair CLI so Grok Bot (and other MCP hosts) can talk to live Codex sessions on your machine",
   "type": "module",
   "main": "dist/mcp/server.js",
   "bin": {
-    "session-bridge-pair": "./dist/pair.js"
+    "wingman-pair": "./dist/pair.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -16,12 +16,13 @@
   },
   "keywords": [
     "mcp",
+    "wingman",
     "codex",
-    "session-bridge",
     "grok",
     "openai-codex",
     "claude-code",
     "mcp-server",
+    "pair-programming",
     "open-source"
   ],
   "license": "MIT",
@@ -44,11 +45,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/juangurdian/session-bridge.git"
+    "url": "https://github.com/juangurdian/wingman.git"
   },
   "bugs": {
-    "url": "https://github.com/juangurdian/session-bridge/issues"
+    "url": "https://github.com/juangurdian/wingman/issues"
   },
-  "homepage": "https://github.com/juangurdian/session-bridge#readme",
+  "homepage": "https://github.com/juangurdian/wingman#readme",
   "author": "Juan Gurdian and contributors"
 }

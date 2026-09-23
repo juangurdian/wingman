@@ -2,7 +2,7 @@
 /**
  * Easy pair CLI:
  * 1. Generate bearer token
- * 2. Write ~/.session-bridge/config.json
+ * 2. Write ~/.wingman/config.json
  * 3. Start MCP on 127.0.0.1:PORT
  * 4. Print tunnel + AddMcpServer instructions for Grok Bot
  */
@@ -12,6 +12,8 @@ import {
   saveConfig,
   resolveHost,
   resolvePort,
+  resolveToken,
+  loadConfig,
   mcpUrl,
   configPath,
   type BridgeConfig,
@@ -43,9 +45,10 @@ function printHelp() {
 
 Environment:
   CODEX_MOCK=1          Use in-memory Codex mock (no codex binary)
-  SESSION_BRIDGE_PORT   Default port (default 3847)
-  SESSION_BRIDGE_HOST   Bind host (default 127.0.0.1)
-  SESSION_BRIDGE_TOKEN  Override token (otherwise generated)
+  WINGMAN_PORT          Default port (default 3847)
+  WINGMAN_HOST          Bind host (default 127.0.0.1)
+  WINGMAN_TOKEN         Override token (otherwise generated)
+  SESSION_BRIDGE_*      Legacy aliases for the above
 
 Real Codex mode requires \`codex\` on PATH and uses \`codex app-server\` (stdio JSON-RPC).
 Do not use removed \`codex mcp-server\`.
@@ -58,7 +61,7 @@ function printPairInstructions(cfg: BridgeConfig, localUrl: string) {
 
   console.log(`
 ╔══════════════════════════════════════════════════════════════════╗
-║                    session-bridge paired                         ║
+║                       Wingman paired                             ║
 ╚══════════════════════════════════════════════════════════════════╝
 
 Config written: ${configPath()}
@@ -81,13 +84,13 @@ Use the HTTPS URL from the tunnel, with path /mcp
 ────────────────────────────────────────────────────────────────────
 Add MCP server fields for Grok Bot / Cursor AddMcpServer:
 
-  name:          session-bridge
+  name:          wingman
   url:           ${tunnelHint}
   Authorization: ${authHeader}
 
 Exact values once you have a public URL:
 
-  name: session-bridge
+  name: wingman
   url:  <PUBLIC_HTTPS_URL>/mcp
   headers:
     Authorization: Bearer ${cfg.token}
@@ -112,9 +115,8 @@ async function main() {
     process.env.CODEX_MOCK = '1';
   }
 
-  let token = process.env.SESSION_BRIDGE_TOKEN?.trim();
+  let token = resolveToken();
   if (!token && args.reuse) {
-    const { loadConfig } = await import('./config.js');
     token = loadConfig()?.token;
   }
   if (!token) token = generateToken();
@@ -139,10 +141,10 @@ async function main() {
     quiet: true,
   });
 
-  console.error(`[session-bridge] listening on ${server.url}`);
+  console.error(`[wingman] listening on ${server.url}`);
 
   const shutdown = async () => {
-    console.error('\n[session-bridge] shutting down…');
+    console.error('\n[wingman] shutting down…');
     try {
       await server.close();
     } catch {

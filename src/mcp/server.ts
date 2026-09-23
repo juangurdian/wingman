@@ -22,6 +22,7 @@ import {
   loadConfig,
   resolveHost,
   resolvePort,
+  resolveToken,
   mcpUrl,
   type BridgeConfig,
 } from '../config.js';
@@ -58,14 +59,14 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
 
   // Health (no auth) for local probes / tunnels
   app.get('/healthz', (_req, res) => {
-    res.status(200).json({ ok: true, service: 'session-bridge' });
+    res.status(200).json({ ok: true, service: 'wingman' });
   });
 
   app.use('/mcp', bearerAuth(token));
 
   const createServer = () => {
     const server = new McpServer({
-      name: 'session-bridge',
+      name: 'wingman',
       version: '0.1.0',
     });
 
@@ -190,7 +191,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
   });
 
   if (!opts.quiet) {
-    console.error(`session-bridge MCP listening on ${url}`);
+    console.error(`wingman MCP listening on ${url}`);
     console.error(`mock=${process.env.CODEX_MOCK === '1' ? 'yes' : 'no'}`);
   }
 
@@ -224,7 +225,7 @@ const isMain =
 if (isMain) {
   const cfg: BridgeConfig | null = loadConfig();
   startMcpServer({
-    token: process.env.SESSION_BRIDGE_TOKEN || cfg?.token,
+    token: resolveToken() || cfg?.token,
     port: resolvePort(cfg?.port),
     host: resolveHost(),
   }).catch((err) => {

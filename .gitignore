@@ -9,4 +9,5 @@ coverage/
 .tokens/
 tokens/
 *.token
+.wingman/
 .session-bridge/

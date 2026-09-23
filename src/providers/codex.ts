@@ -311,8 +311,8 @@ export class CodexProvider implements SessionProvider {
     // Handshake required before any other method.
     await this.request('initialize', {
       clientInfo: {
-        name: 'session-bridge',
-        title: 'Session Bridge',
+        name: 'wingman',
+        title: 'Wingman',
         version: '0.1.0',
       },
     });

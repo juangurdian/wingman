@@ -1,11 +1,11 @@
 ---
 name: pair-coding-sessions
-description: Pair Grok Bot to local Codex (session-bridge MCP) with easy pair CLI, tunnel, and session tools.
+description: Pair Grok Bot to local Codex (Wingman MCP) with easy pair CLI, tunnel, and session tools.
 ---
 
-# Pair coding sessions (session-bridge)
+# Pair coding sessions (Wingman)
 
-Use this skill to connect **Grok Bot** to **Codex** sessions on the user’s machine via **session-bridge**.
+Use this skill to connect **Grok Bot** to **Codex** sessions on the user’s machine via **Wingman**.
 
 ## When to use
 
@@ -16,7 +16,7 @@ Use this skill to connect **Grok Bot** to **Codex** sessions on the user’s mac
 ## Prerequisites
 
 - Node 20+
-- This repo built/installed (`npm install` in `session-bridge`)
+- This repo built/installed (`npm install` in the Wingman checkout)
 - For **real** Codex: `codex` on PATH (uses `codex app-server`, **not** `codex mcp-server`)
 - A tunnel tool: `cloudflared` or Tailscale Funnel (Grok cannot hit `127.0.0.1`)
 
@@ -25,7 +25,7 @@ Use this skill to connect **Grok Bot** to **Codex** sessions on the user’s mac
 ### 1. Start the bridge
 
 ```bash
-cd <path-to-session-bridge>
+cd <path-to-wingman>
 CODEX_MOCK=1 npm run pair          # no codex binary needed
 # or real:
 # npm run pair
@@ -33,7 +33,7 @@ CODEX_MOCK=1 npm run pair          # no codex binary needed
 
 Note the printed **token** and local URL (`http://127.0.0.1:3847/mcp`).
 
-Config is written to `~/.session-bridge/config.json`.
+Config is written to `~/.wingman/config.json` (legacy `~/.session-bridge/config.json` is still read as a fallback).
 
 ### 2. Tunnel localhost
 
@@ -51,7 +51,7 @@ Copy the public HTTPS origin and append `/mcp`.
 
 | Field | Value |
 |-------|--------|
-| name | `session-bridge` |
+| name | `wingman` |
 | url | `https://<tunnel-host>/mcp` |
 | Authorization | `Bearer <token>` |
 
@@ -79,7 +79,7 @@ Claude (`provider: "claude"`) returns **not yet enabled** unless explicitly stub
 ## Safety
 
 - Bridge binds **127.0.0.1** only; always use bearer auth
-- Do not commit tokens; `~/.session-bridge/` is local
+- Do not commit tokens; `~/.wingman/` (and legacy `~/.session-bridge/`) are local
 - Approvals / sandbox still run under the user’s Codex settings
 - Do not scrape credentials or bypass auth to “fix” tunnel issues
 

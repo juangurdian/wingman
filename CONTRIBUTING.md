@@ -1,4 +1,4 @@
-# Contributing to session-bridge
+# Contributing to Wingman
 
 Thanks for helping build an open bridge between assistant hosts (Grok Bot, Cursor, and friends) and local coding-agent sessions (Codex first, Claude Code next).
 
@@ -19,7 +19,7 @@ npm run build
 CODEX_MOCK=1 npm run pair
 ```
 
-Node 20+ required. Mock mode needs no Codex CLI.
+Node 20+ required. Mock mode needs no Codex CLI. Config lives in `~/.wingman/` (legacy `~/.session-bridge/` is still read as a fallback).
 
 ## Pull requests
 
