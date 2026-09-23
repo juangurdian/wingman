@@ -5,8 +5,10 @@
 Dual-provider: Codex (app-server) + Claude Code (Agent SDK).
 
 [![CI](https://github.com/juangurdian/wingman/actions/workflows/ci.yml/badge.svg)](https://github.com/juangurdian/wingman/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/wingman-mcp.svg)](https://www.npmjs.com/package/wingman-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](tsconfig.json)
+[![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 
 See **[ROADMAP.md](ROADMAP.md)** for positioning, backlog, and non-goals.
 
@@ -18,16 +20,33 @@ Cloud assistants are great copilots — until they need to *touch* the session y
 
 Think of it as a radio link between the bot in the cloud and the agent on your desk. You're still flying; Wingman just rides shotgun.
 
-## Quickstart (3 steps)
+## Quickstart
+
+### Option 1: npx (recommended)
+
+```bash
+# Run directly without install — try it now!
+npx wingman-mcp
+
+# Or install globally for repeated use
+npm install -g wingman-mcp
+wingman-pair
+```
+
+Set `CODEX_MOCK=1` or `CLAUDE_MOCK=1` for mock mode (no real agent required).
+
+### Option 2: Clone (for contributors)
 
 ```bash
 git clone https://github.com/juangurdian/wingman.git
 cd wingman
 npm install
-CODEX_MOCK=1 npm run pair        # or CLAUDE_MOCK=1 for Claude
+npm run pair
 ```
 
-1. **Pair** — `npm run pair` generates a bearer token, writes `~/.wingman/config.json`, and starts MCP on `127.0.0.1:3847/mcp`.
+### After pairing
+
+1. **Pair** — `wingman-pair` generates a bearer token, writes `~/.wingman/config.json`, and starts MCP on `127.0.0.1:3847/mcp`.
 2. **Tunnel** — remote hosts cannot reach localhost. Expose the port:
 
    ```bash
@@ -206,12 +225,21 @@ Sessions returned by `list_sessions` include:
 
 Claude sessions are stored by the Agent SDK in `~/.claude/projects/<project-key>/<session-id>.jsonl`. Wingman's registry maps session IDs to their working directories so `listSessions()` and `readTranscript()` can locate them.
 
-## Scripts
+## Scripts & CLI
+
+When installed globally (`npm i -g wingman-mcp`) or via npx:
+
+| Command | Purpose |
+|---------|---------|
+| `wingman-pair` / `wingman-mcp` | Generate token, save config, start MCP, print pair instructions |
+| `wingman-doctor` | Check environment: Node version, config, port, Claude SDK / Codex binary |
+
+For local development:
 
 | Script | Purpose |
 |--------|---------|
-| `npm run pair` | Generate token, save config, start MCP, print pair instructions (`wingman-pair` bin) |
-| `npm run doctor` | Check environment: Node version, config, port, Claude SDK / Codex binary |
+| `npm run pair` | Same as `wingman-pair` (uses tsx) |
+| `npm run doctor` | Same as `wingman-doctor` |
 | `npm run dev` | Start MCP only (needs existing config/token) |
 | `npm run build` | Compile TypeScript → `dist/` |
 | `npm test` | Vitest unit tests (mocked providers) |
@@ -252,6 +280,10 @@ The doctor prints clear next steps if any check fails.
 
 See [`skills/pair-coding-sessions/SKILL.md`](skills/pair-coding-sessions/SKILL.md) for setup / pair / operate steps aligned with this CLI.
 
+## Security
+
+See [SECURITY.md](SECURITY.md) for security policy, bearer token handling, and best practices.
+
 ## Community
 
 Open-source. MVP — Codex and Claude providers work (mock + real); APIs may shift before 1.0.
@@ -263,13 +295,16 @@ If Wingman helped you pair a session, star the repo or open an issue with what y
 ## Develop
 
 ```bash
+git clone https://github.com/juangurdian/wingman.git
+cd wingman
 npm install
-npm test
-npm run build
+npm run doctor              # check environment
+npm test                    # run tests
+npm run build               # compile TypeScript
 CODEX_MOCK=1 npm run pair   # or CLAUDE_MOCK=1
 ```
 
-Node 20+. Success criteria: install, test, and build succeed; mock pair prints URL + token.
+Node 20+. Success criteria: install, test, build succeed; mock pair prints URL + token.
 
 ## License
 

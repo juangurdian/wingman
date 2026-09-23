@@ -41,64 +41,103 @@ function parseArgs(argv: string[]) {
 }
 
 function printHelp() {
-  console.log(`Usage: npm run pair -- [--port PORT] [--host HOST] [--reuse-token]
+  console.log(`Usage: wingman-pair [--port PORT] [--host HOST] [--reuse-token]
+       npx wingman-mcp [--port PORT] [--host HOST] [--reuse-token]
+
+Dual-provider MCP bridge for Codex and Claude Code.
 
 Environment:
   CODEX_MOCK=1          Use in-memory Codex mock (no codex binary)
-  WINGMAN_PORT          Default port (default 3847)
+  CLAUDE_MOCK=1         Use in-memory Claude mock (no Claude SDK)
+  WINGMAN_PORT          Server port (default 3847)
   WINGMAN_HOST          Bind host (default 127.0.0.1)
-  WINGMAN_TOKEN         Override token (otherwise generated)
-  SESSION_BRIDGE_*      Legacy aliases for the above
+  WINGMAN_TOKEN         Override token (otherwise auto-generated)
 
-Real Codex mode requires \`codex\` on PATH and uses \`codex app-server\` (stdio JSON-RPC).
-Do not use removed \`codex mcp-server\`.
+Real mode:
+  Codex:  requires \`codex\` on PATH (uses \`codex app-server\` JSON-RPC)
+  Claude: uses bundled @anthropic-ai/claude-agent-sdk
+
+Run \`wingman-doctor\` to check your environment.
 `);
+}
+
+function getMockModeDisplay(): string {
+  const codexMock = process.env.CODEX_MOCK === '1' || process.env.CODEX_MOCK === 'true';
+  const claudeMock = process.env.CLAUDE_MOCK === '1' || process.env.CLAUDE_MOCK === 'true';
+
+  if (codexMock && claudeMock) {
+    return 'YES (both CODEX_MOCK=1 and CLAUDE_MOCK=1)';
+  } else if (codexMock) {
+    return 'Codex mock (CODEX_MOCK=1), Claude real';
+  } else if (claudeMock) {
+    return 'Codex real, Claude mock (CLAUDE_MOCK=1)';
+  }
+  return 'no — real Codex + Claude providers';
 }
 
 function printPairInstructions(cfg: BridgeConfig, localUrl: string) {
   const tunnelHint = `https://YOUR-TUNNEL-HOST/mcp`;
   const authHeader = `Bearer ${cfg.token}`;
+  const mockDisplay = getMockModeDisplay();
 
   console.log(`
 ╔══════════════════════════════════════════════════════════════════╗
 ║                       Wingman paired                             ║
+║           Dual-provider bridge: Codex + Claude Code              ║
 ╚══════════════════════════════════════════════════════════════════╝
 
 Config written: ${configPath()}
 Local MCP URL:  ${localUrl}
 Token:          ${cfg.token}
-Mock mode:      ${cfg.mock ? 'YES (CODEX_MOCK=1)' : 'no — requires codex on PATH'}
+Mock mode:      ${mockDisplay}
 
 ────────────────────────────────────────────────────────────────────
-Grok Bot cannot reach 127.0.0.1 on your machine. Expose a tunnel:
+TUNNEL SETUP (required for remote access)
 
-  # Cloudflare quick tunnel (ephemeral URL)
-  cloudflared tunnel --url http://${cfg.host}:${cfg.port}
+Remote hosts (Grok Bot, Cursor Cloud, etc.) cannot reach 127.0.0.1.
+Pick one tunnel option:
 
-  # Tailscale Funnel (stable, if you use Tailscale)
-  tailscale funnel ${cfg.port}
+  ┌─ Cloudflare Tunnel (quick, ephemeral URL) ─────────────────────┐
+  │  cloudflared tunnel --url http://${cfg.host}:${cfg.port}                       │
+  │  → Gives you a URL like https://abc.trycloudflare.com          │
+  └────────────────────────────────────────────────────────────────┘
 
-Use the HTTPS URL from the tunnel, with path /mcp
-(example: https://abc.trycloudflare.com/mcp).
+  ┌─ Tailscale Funnel (stable, requires Tailscale) ────────────────┐
+  │  tailscale funnel ${cfg.port}                                          │
+  │  → Gives you a URL like https://yourhost.ts.net                │
+  └────────────────────────────────────────────────────────────────┘
+
+Then append /mcp to your tunnel URL (e.g., https://abc.trycloudflare.com/mcp).
 
 ────────────────────────────────────────────────────────────────────
-Add MCP server fields for Grok Bot / Cursor AddMcpServer:
+MCP SERVER CONFIG (for Grok Bot / Cursor / other MCP hosts)
 
   name:          wingman
   url:           ${tunnelHint}
   Authorization: ${authHeader}
 
-Exact values once you have a public URL:
-
-  name: wingman
-  url:  <PUBLIC_HTTPS_URL>/mcp
-  headers:
-    Authorization: Bearer ${cfg.token}
+Example config block:
+  {
+    "name": "wingman",
+    "url": "<YOUR_TUNNEL_URL>/mcp",
+    "headers": { "Authorization": "Bearer ${cfg.token}" }
+  }
 
 ────────────────────────────────────────────────────────────────────
-After pairing, ask Grok Bot to:
-  1. list_sessions (provider=codex)
-  2. read_transcript / send_message / interrupt
+USAGE
+
+After pairing, the MCP host can call:
+  • list_sessions(provider="codex" | "claude")
+  • create_session(provider, cwd?, prompt?)
+  • read_transcript / send_message / interrupt
+
+Both Codex and Claude sessions are supported via the same bridge.
+
+────────────────────────────────────────────────────────────────────
+TROUBLESHOOTING
+
+  If something isn't working, run:    wingman-doctor
+  (or: npm run doctor)
 
 Ctrl+C to stop the bridge.
 `);

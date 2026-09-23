@@ -5,15 +5,25 @@
   "type": "module",
   "main": "dist/mcp/server.js",
   "bin": {
-    "wingman-pair": "./dist/pair.js"
+    "wingman-pair": "./dist/pair.js",
+    "wingman-doctor": "./dist/doctor.js",
+    "wingman-mcp": "./dist/pair.js"
   },
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE",
+    "ROADMAP.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/mcp/server.ts",
     "pair": "tsx src/pair.ts",
     "doctor": "tsx src/doctor.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "mcp",
