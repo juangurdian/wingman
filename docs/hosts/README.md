@@ -8,6 +8,7 @@ Connect Wingman to various MCP hosts. Choose your host below.
 |------|----------|-----------------|-------|
 | **Grok Bot** | ✅ Remote | ✅ Full | [remote-hosts.md](remote-hosts.md) |
 | **Cursor IDE** | ✅ Remote | ✅ Full | [cursor-ide.md](cursor-ide.md) |
+| **Muse Code** | ✅ Remote | ✅ Full | [muse-code.md](muse-code.md) |
 | **Claude Desktop** | ❌ Stdio | ⚠️ Limited | [claude-desktop.md](claude-desktop.md) |
 | **Custom clients** | Varies | Depends | [generic-mcp-client.md](generic-mcp-client.md) |
 
@@ -30,6 +31,10 @@ The primary use case. Cloud AI assistants connect to your local Codex/Claude ses
 ### [Cursor IDE](cursor-ide.md)
 
 Step-by-step setup for Cursor, which natively supports remote MCP servers with bearer authentication.
+
+### [Muse Code](muse-code.md)
+
+Step-by-step setup for Muse Code, which supports streamable HTTP MCP with bearer authentication. Includes multi-host scenarios (Muse + Grok sharing a Wingman).
 
 ### [Claude Desktop](claude-desktop.md)
 

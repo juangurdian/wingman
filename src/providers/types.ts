@@ -3,7 +3,7 @@
  * Codex is first-class; Claude is stubbed.
  */
 
-export type ProviderName = 'codex' | 'claude';
+export type ProviderName = 'codex' | 'claude' | 'muse';
 
 export type SessionSource = 'wingman' | 'discovered';
 

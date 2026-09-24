@@ -215,6 +215,66 @@ export async function checkCodexBinary(): Promise<CheckResult> {
   });
 }
 
+export async function checkMuseBinary(): Promise<CheckResult> {
+  if (process.env.MUSE_MOCK === '1' || process.env.MUSE_MOCK === 'true') {
+    return {
+      name: 'Muse binary',
+      status: 'pass',
+      message: 'MUSE_MOCK=1 (binary check skipped)',
+    };
+  }
+
+  const bin = process.env.MUSE_BIN?.trim() || 'muse';
+
+  return new Promise((resolve) => {
+    const proc = spawn(bin, ['--version'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 5000,
+    });
+
+    let stdout = '';
+    proc.stdout?.on('data', (d) => {
+      stdout += d.toString();
+    });
+
+    proc.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') {
+        resolve({
+          name: 'Muse binary',
+          status: 'warn',
+          message: `Muse binary not found: ${bin} (optional — only needed for Muse provider)`,
+          fix: 'Install Muse Code CLI and ensure `muse` is on PATH, or set MUSE_MOCK=1',
+        });
+      } else {
+        resolve({
+          name: 'Muse binary',
+          status: 'warn',
+          message: `Muse error: ${err.message} (optional — only needed for Muse provider)`,
+          fix: 'Check Muse installation, or set MUSE_MOCK=1',
+        });
+      }
+    });
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        const version = stdout.trim().split('\n')[0] || 'version unknown';
+        resolve({
+          name: 'Muse binary',
+          status: 'pass',
+          message: `Muse available: ${version}`,
+        });
+      } else {
+        resolve({
+          name: 'Muse binary',
+          status: 'warn',
+          message: `Muse exited with code ${code} (optional — only needed for Muse provider)`,
+          fix: 'Muse may need authentication or setup',
+        });
+      }
+    });
+  });
+}
+
 export async function runAllChecks(): Promise<CheckResult[]> {
   const checks = await Promise.all([
     checkNodeVersion(),
@@ -222,6 +282,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
     checkPort(),
     checkClaudeSdk(),
     checkCodexBinary(),
+    checkMuseBinary(),
   ]);
 
   return checks;
