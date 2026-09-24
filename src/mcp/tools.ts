@@ -35,6 +35,8 @@ export const CreateSessionSchema = z.object({
   prompt: z.string().optional(),
   name: z.string().optional(),
   tags: z.array(z.string()).optional(),
+  /** Model override for Codex sessions (e.g., 'gpt-4.1' for ChatGPT accounts). Ignored for other providers. */
+  model: z.string().optional(),
 });
 
 export const SetSessionMetaSchema = z.object({
@@ -182,6 +184,7 @@ export function createToolHandlers(providers: ProviderRegistry) {
           prompt: args.prompt,
           name: args.name,
           tags: args.tags,
+          model: args.model,
         });
         return textResult(result);
       } catch (err) {

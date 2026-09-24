@@ -145,13 +145,14 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'create_session',
       {
         description:
-          'Create a new session (Codex: thread/start). Optional cwd, initial prompt, name, and tags.',
+          'Create a new session (Codex: thread/start). Optional cwd, initial prompt, name, tags, and model override (Codex only).',
         inputSchema: {
           provider: z.enum(['codex', 'claude']),
           cwd: z.string().optional(),
           prompt: z.string().optional(),
           name: z.string().optional(),
           tags: z.array(z.string()).optional(),
+          model: z.string().optional().describe('Model override for Codex sessions (e.g., gpt-4.1 for ChatGPT accounts). Ignored for other providers.'),
         },
       },
       async (args) => handlers.create_session(CreateSessionSchema.parse(args)),

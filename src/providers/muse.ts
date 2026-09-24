@@ -38,6 +38,8 @@ import type {
 import {
   resolveWaitTurnTimeoutMs,
   resolveWaitTurnPollMs,
+  resolveHostId,
+  resolveHostName,
 } from '../config.js';
 
 interface MockSession {
@@ -134,6 +136,9 @@ export class MuseProvider implements SessionProvider {
 
   async listSessions(): Promise<SessionSummary[]> {
     requireMock();
+    const hostId = resolveHostId();
+    const hostName = resolveHostName();
+    
     return [...this.mockSessions.values()].map((s) => ({
       id: s.id,
       provider: 'muse' as const,
@@ -145,6 +150,8 @@ export class MuseProvider implements SessionProvider {
       updatedAt: s.updatedAt,
       source: 'wingman' as const,
       tags: s.tags,
+      hostId,
+      hostName,
     }));
   }
 
@@ -155,11 +162,16 @@ export class MuseProvider implements SessionProvider {
     if (!session) return null;
 
     const activeTurn = this.activeTurns.get(sessionId);
+    const hostId = resolveHostId();
+    const hostName = resolveHostName();
+    
     return {
       ...session,
       status: activeTurn ? 'running' : 'idle',
       activeTurnId: activeTurn?.turnId,
       activeTurnStartedAt: activeTurn?.startedAt,
+      hostId,
+      hostName,
     };
   }
 

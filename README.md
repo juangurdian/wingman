@@ -157,12 +157,12 @@ flowchart LR
 
 | Tool | Args | Notes |
 |------|------|--------|
-| `list_sessions` | `provider?`: `codex` \| `claude` | Lists sessions for one or both providers (includes `status`, `source`, `tags`) |
-| `get_session` | `provider`, `session_id` | Get detailed session info including status (`idle` / `running`) and tags |
+| `list_sessions` | `provider?`: `codex` \| `claude` | Lists sessions for one or both providers (includes `status`, `source`, `tags`, `hostId`, `hostName`) |
+| `get_session` | `provider`, `session_id` | Get detailed session info including status (`idle` / `running`), tags, and host identity |
 | `read_transcript` | `provider`, `session_id`, `limit?` | Recent messages (newest at end) |
 | `send_message` | `provider`, `session_id`, `text` | Codex: `turn/start`; Claude: returns `accepted` quickly, turn runs async |
 | `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`; Claude: works when Wingman owns the active turn |
-| `create_session` | `provider`, `cwd?`, `prompt?`, `name?`, `tags?` | Codex: `thread/start`; Claude: new session with optional name/tags (async) |
+| `create_session` | `provider`, `cwd?`, `prompt?`, `name?`, `tags?`, `model?` | Codex: `thread/start` with optional model override; Claude: new session with optional name/tags (async) |
 | `wait_turn` | `provider`, `session_id`, `timeout_ms?`, `poll_interval_ms?` | Wait for turn to complete/fail/timeout; returns status + message snippet |
 | `steer` | `provider`, `session_id`, `text` | Add guidance to in-flight turn (Codex only; Claude returns unsupported) |
 | `list_approvals` | `provider`, `session_id` | List pending approvals (Codex); Claude returns empty array |
@@ -176,7 +176,26 @@ For **Claude sessions**, `create_session` returns immediately:
 - **Without prompt**: Returns `{ sessionId, status: "created" }` — session is registered but no turn is running
 - **With prompt**: Returns `{ sessionId, status: "accepted", turnId }` — the initial prompt turn runs in the background, preventing MCP HTTP timeouts
 
-For **Codex sessions**, `create_session` calls `thread/start` and returns `{ sessionId, status: "created" | "accepted" }`.
+For **Codex sessions**, `create_session` calls `thread/start` and returns `{ sessionId, status: "created" | "accepted", model? }`.
+
+### Codex model override
+
+If your `~/.codex/config.toml` has a model like `gpt-6-sol` that requires API access, creating Codex sessions with a ChatGPT account will fail. You can override the model:
+
+**Via environment variable** (recommended):
+```bash
+export WINGMAN_CODEX_MODEL="gpt-4.1"
+npx wingman-mcp
+```
+
+**Via create_session argument** (per-session):
+```json
+{ "provider": "codex", "model": "gpt-4.1", "prompt": "Hello" }
+```
+
+**Priority order**: `create_session.model` > `WINGMAN_CODEX_MODEL` env > user's `~/.codex/config.toml`
+
+Run `wingman-doctor` to check for ChatGPT-incompatible models in your config.
 
 ### send_message behavior
 
@@ -270,6 +289,7 @@ Example Codex approval flow:
 | `CODEX_BIN` | `codex` | Path to Codex CLI binary |
 | `CODEX_APP_SERVER_ARGS` | `app-server` | Args passed to Codex binary |
 | `CODEX_RPC_TIMEOUT_MS` | `60000` | JSON-RPC timeout |
+| `WINGMAN_CODEX_MODEL` | unset | Override Codex model (e.g., `gpt-4.1` for ChatGPT accounts) |
 
 ### Claude
 
@@ -281,6 +301,15 @@ Example Codex approval flow:
 | `CLAUDE_SEND_TIMEOUT_MS` | `120000` | Timeout for Claude SDK send operations |
 
 The Claude provider uses the bundled Agent SDK binary automatically. No separate `claude` CLI install is required unless you override `pathToClaudeCodeExecutable` in code.
+
+### Multi-Host
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WINGMAN_HOST_ID` | hostname | Machine identifier for multi-host setups |
+| `WINGMAN_HOST_NAME` | hostname | Human-friendly host name for display |
+
+See [docs/hosts/multi-host.md](docs/hosts/multi-host.md) for running Wingman on multiple machines.
 
 ## Session management
 

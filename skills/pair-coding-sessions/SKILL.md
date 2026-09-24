@@ -71,7 +71,11 @@ After pairing, prefer these tools (in order):
 2. `read_transcript` — `{ "provider": "...", "session_id": "...", "limit": 30 }`
 3. `send_message` — `{ "provider": "...", "session_id": "...", "text": "..." }`
 4. `interrupt` — if a turn is stuck
-5. `create_session` — `{ "provider": "...", "cwd": "...", "prompt": "..." }`
+5. `create_session` — `{ "provider": "...", "cwd": "...", "prompt": "...", "model": "..." }`
+
+### Multi-host identification
+
+Sessions now include `hostId` and `hostName` fields so MCP clients can tell which machine a session belongs to when multiple Wingman instances are connected.
 
 ### Provider-specific notes
 
@@ -97,6 +101,16 @@ Sessions include a `source` field: `'wingman'` (created via Wingman) or `'discov
 | Codex | Real | unset mock, `codex` on PATH | JSON-RPC to `codex app-server` |
 | Claude | Mock | `CLAUDE_MOCK=1` | In-memory sessions + mock discovered sessions |
 | Claude | Real | unset mock | Agent SDK spawns Claude subprocess |
+
+### Codex model override (ChatGPT account fix)
+
+If `~/.codex/config.toml` has a model like `gpt-6-sol` that requires API access, creating sessions fails with ChatGPT accounts. Fix:
+
+```bash
+export WINGMAN_CODEX_MODEL="gpt-4.1"  # or pass model arg to create_session
+```
+
+Run `wingman-doctor` to detect incompatible models.
 
 ### Claude environment variables
 

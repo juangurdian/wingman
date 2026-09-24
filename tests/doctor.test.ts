@@ -73,7 +73,7 @@ describe('Doctor checks', () => {
     const { runAllChecks } = await import('../src/doctor.js');
     const results = await runAllChecks();
 
-    expect(results.length).toBe(6);
+    expect(results.length).toBe(8);
     expect(results.map((r) => r.name)).toEqual([
       'Node.js version',
       'Config file',
@@ -81,6 +81,8 @@ describe('Doctor checks', () => {
       'Claude Agent SDK',
       'Codex binary',
       'Muse binary',
+      'Codex model config',
+      'Host identity',
     ]);
   });
 

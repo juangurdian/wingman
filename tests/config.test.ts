@@ -4,9 +4,15 @@ import {
   resolveWaitTurnTimeoutMs,
   resolveWaitTurnPollMs,
   isHealthzAuthFree,
+  resolveCodexModel,
+  isCodexModelChatGptIncompatible,
+  resolveHostId,
+  resolveHostName,
   CLAUDE_SEND_TIMEOUT_MS_DEFAULT,
   WINGMAN_WAIT_TURN_TIMEOUT_MS_DEFAULT,
   WINGMAN_WAIT_TURN_POLL_MS_DEFAULT,
+  CODEX_CHATGPT_SAFE_MODEL,
+  CODEX_CHATGPT_INCOMPATIBLE_MODELS,
 } from '../src/config.js';
 
 describe('Configurable timeouts', () => {
@@ -109,5 +115,116 @@ describe('isHealthzAuthFree', () => {
 
     vi.stubEnv('WINGMAN_HEALTHZ_AUTH_FREE', 'yes');
     expect(isHealthzAuthFree()).toBe(false);
+  });
+});
+
+describe('resolveCodexModel - model override precedence', () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('returns explicit arg when provided (highest priority)', () => {
+    vi.stubEnv('WINGMAN_CODEX_MODEL', 'gpt-4.1');
+    expect(resolveCodexModel('gpt-4.5')).toBe('gpt-4.5');
+  });
+
+  it('returns WINGMAN_CODEX_MODEL when no explicit arg', () => {
+    vi.stubEnv('WINGMAN_CODEX_MODEL', 'gpt-4.1');
+    expect(resolveCodexModel()).toBe('gpt-4.1');
+    expect(resolveCodexModel(undefined)).toBe('gpt-4.1');
+  });
+
+  it('returns undefined when no override is set (use Codex default)', () => {
+    expect(resolveCodexModel()).toBeUndefined();
+    expect(resolveCodexModel(undefined)).toBeUndefined();
+  });
+
+  it('trims whitespace from explicit arg', () => {
+    expect(resolveCodexModel('  gpt-4.1  ')).toBe('gpt-4.1');
+  });
+
+  it('trims whitespace from env var', () => {
+    vi.stubEnv('WINGMAN_CODEX_MODEL', '  gpt-4.1  ');
+    expect(resolveCodexModel()).toBe('gpt-4.1');
+  });
+
+  it('ignores empty explicit arg and falls back to env', () => {
+    vi.stubEnv('WINGMAN_CODEX_MODEL', 'gpt-4.1');
+    expect(resolveCodexModel('')).toBe('gpt-4.1');
+    expect(resolveCodexModel('   ')).toBe('gpt-4.1');
+  });
+});
+
+describe('isCodexModelChatGptIncompatible', () => {
+  it('detects incompatible models', () => {
+    for (const model of CODEX_CHATGPT_INCOMPATIBLE_MODELS) {
+      expect(isCodexModelChatGptIncompatible(model)).toBe(true);
+    }
+  });
+
+  it('handles case insensitivity', () => {
+    expect(isCodexModelChatGptIncompatible('GPT-6-SOL')).toBe(true);
+    expect(isCodexModelChatGptIncompatible('Gpt-5-Sol')).toBe(true);
+  });
+
+  it('detects model variants with prefixes', () => {
+    expect(isCodexModelChatGptIncompatible('gpt-6-sol-preview')).toBe(true);
+    expect(isCodexModelChatGptIncompatible('o3-mini-high')).toBe(true);
+  });
+
+  it('returns false for compatible models', () => {
+    expect(isCodexModelChatGptIncompatible('gpt-4.1')).toBe(false);
+    expect(isCodexModelChatGptIncompatible('gpt-4o')).toBe(false);
+    expect(isCodexModelChatGptIncompatible(CODEX_CHATGPT_SAFE_MODEL)).toBe(false);
+  });
+});
+
+describe('Host identity configuration', () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('resolveHostId uses WINGMAN_HOST_ID when set', () => {
+    vi.stubEnv('WINGMAN_HOST_ID', 'pearlwolf');
+    expect(resolveHostId()).toBe('pearlwolf');
+  });
+
+  it('resolveHostId falls back to hostname when env not set', () => {
+    const hostId = resolveHostId();
+    expect(hostId).toBeDefined();
+    expect(typeof hostId).toBe('string');
+    expect(hostId.length).toBeGreaterThan(0);
+  });
+
+  it('resolveHostName uses WINGMAN_HOST_NAME when set', () => {
+    vi.stubEnv('WINGMAN_HOST_NAME', 'Pearlwolf Windows');
+    expect(resolveHostName()).toBe('Pearlwolf Windows');
+  });
+
+  it('resolveHostName falls back to WINGMAN_HOST_ID when name not set', () => {
+    vi.stubEnv('WINGMAN_HOST_ID', 'pearlwolf');
+    expect(resolveHostName()).toBe('pearlwolf');
+  });
+
+  it('resolveHostName falls back to hostname when no env set', () => {
+    const hostName = resolveHostName();
+    expect(hostName).toBeDefined();
+    expect(typeof hostName).toBe('string');
+    expect(hostName.length).toBeGreaterThan(0);
+  });
+
+  it('trims whitespace from env vars', () => {
+    vi.stubEnv('WINGMAN_HOST_ID', '  pearlwolf  ');
+    vi.stubEnv('WINGMAN_HOST_NAME', '  Pearlwolf Windows  ');
+    expect(resolveHostId()).toBe('pearlwolf');
+    expect(resolveHostName()).toBe('Pearlwolf Windows');
   });
 });

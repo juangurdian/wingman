@@ -16,6 +16,9 @@ import {
   loadConfig,
   mcpUrl,
   configPath,
+  resolveHostId,
+  resolveHostName,
+  resolveCodexModel,
   type BridgeConfig,
 } from './config.js';
 import { startMcpServer } from './mcp/server.js';
@@ -79,6 +82,9 @@ function printPairInstructions(cfg: BridgeConfig, localUrl: string) {
   const tunnelHint = `https://YOUR-TUNNEL-HOST/mcp`;
   const authHeader = `Bearer ${cfg.token}`;
   const mockDisplay = getMockModeDisplay();
+  const hostId = cfg.hostId ?? resolveHostId();
+  const hostName = cfg.hostName ?? resolveHostName();
+  const codexModel = resolveCodexModel();
 
   console.log(`
 ╔══════════════════════════════════════════════════════════════════╗
@@ -90,6 +96,8 @@ Config written: ${configPath()}
 Local MCP URL:  ${localUrl}
 Token:          ${cfg.token}
 Mock mode:      ${mockDisplay}
+Host ID:        ${hostId}
+Host Name:      ${hostName}${codexModel ? `\nCodex Model:    ${codexModel} (override active)` : ''}
 
 ────────────────────────────────────────────────────────────────────
 TUNNEL SETUP (required for remote access)
@@ -176,6 +184,9 @@ async function main() {
   }
   if (!token) token = generateToken();
 
+  const hostId = resolveHostId();
+  const hostName = resolveHostName();
+
   const cfg: BridgeConfig = {
     token,
     host,
@@ -183,6 +194,8 @@ async function main() {
     mcpPath: '/mcp',
     createdAt: new Date().toISOString(),
     mock,
+    hostId,
+    hostName,
   };
   saveConfig(cfg);
 
