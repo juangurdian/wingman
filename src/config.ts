@@ -127,18 +127,13 @@ export function isHealthzAuthFree(): boolean {
 
 // Codex model configuration
 
-/** 
- * Default-safe Codex model for ChatGPT accounts.
- * The gpt-6-sol and similar advanced models require API access.
- * ChatGPT accounts should use gpt-4.1 or similar supported models.
- */
-export const CODEX_CHATGPT_SAFE_MODEL = 'gpt-4.1';
-
 /**
- * Models known to be incompatible with ChatGPT accounts.
- * These require API access (not ChatGPT subscription).
+ * Models that historically required API access (not ChatGPT subscription).
+ * This is an advisory list only — Wingman does NOT recommend specific fallback models.
+ * Users should keep their chosen model if they have API access, or let Codex pick
+ * its current default by unsetting `model` in ~/.codex/config.toml.
  */
-export const CODEX_CHATGPT_INCOMPATIBLE_MODELS = [
+export const CODEX_API_ONLY_MODELS = [
   'gpt-6-sol',
   'gpt-5-sol',
   'gpt-6',
@@ -150,6 +145,9 @@ export const CODEX_CHATGPT_INCOMPATIBLE_MODELS = [
 /**
  * Resolve Codex model to use for new sessions.
  * Priority: explicit arg > WINGMAN_CODEX_MODEL env > undefined (use Codex default/config)
+ * 
+ * By default (undefined), Wingman does NOT override the model — it uses whatever
+ * is configured in ~/.codex/config.toml or Codex's built-in defaults.
  */
 export function resolveCodexModel(explicit?: string): string | undefined {
   if (explicit?.trim()) return explicit.trim();
@@ -159,11 +157,12 @@ export function resolveCodexModel(explicit?: string): string | undefined {
 }
 
 /**
- * Check if a model is likely incompatible with ChatGPT accounts.
+ * Check if a model historically required API access (not ChatGPT subscription).
+ * This is advisory only — the list may be outdated as models evolve.
  */
-export function isCodexModelChatGptIncompatible(model: string): boolean {
+export function isCodexModelApiOnly(model: string): boolean {
   const normalized = model.toLowerCase().trim();
-  return CODEX_CHATGPT_INCOMPATIBLE_MODELS.some(
+  return CODEX_API_ONLY_MODELS.some(
     (m) => normalized === m.toLowerCase() || normalized.startsWith(`${m.toLowerCase()}-`)
   );
 }

@@ -381,33 +381,33 @@ describe('CodexProvider mock mode - wait/steer/approvals', () => {
       
       const result = await provider.createSession({ 
         cwd: '/tmp/test',
-        model: 'gpt-4.1',
+        model: 'custom-model',
       });
       
-      expect(result.model).toBe('gpt-4.1');
+      expect(result.model).toBe('custom-model');
     });
 
     it('createSession returns model from WINGMAN_CODEX_MODEL env', async () => {
-      vi.stubEnv('WINGMAN_CODEX_MODEL', 'gpt-4.5');
+      vi.stubEnv('WINGMAN_CODEX_MODEL', 'model-from-env');
       const { CodexProvider } = await import('../src/providers/codex.js');
       const provider = new CodexProvider();
       
       const result = await provider.createSession({ cwd: '/tmp/test' });
       
-      expect(result.model).toBe('gpt-4.5');
+      expect(result.model).toBe('model-from-env');
     });
 
     it('explicit model arg takes precedence over env', async () => {
-      vi.stubEnv('WINGMAN_CODEX_MODEL', 'gpt-4.1');
+      vi.stubEnv('WINGMAN_CODEX_MODEL', 'model-from-env');
       const { CodexProvider } = await import('../src/providers/codex.js');
       const provider = new CodexProvider();
       
       const result = await provider.createSession({ 
         cwd: '/tmp/test',
-        model: 'gpt-4.5',
+        model: 'model-from-arg',
       });
       
-      expect(result.model).toBe('gpt-4.5');
+      expect(result.model).toBe('model-from-arg');
     });
 
     it('createSession returns undefined model when no override', async () => {

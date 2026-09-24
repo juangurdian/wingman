@@ -166,7 +166,7 @@ export interface CreateSessionOptions {
   prompt?: string;
   name?: string;
   tags?: string[];
-  /** Model override for Codex sessions (e.g., 'gpt-4.1' for ChatGPT accounts). */
+  /** Model override for Codex sessions. Optional; defaults to Codex config/defaults. */
   model?: string;
 }
 

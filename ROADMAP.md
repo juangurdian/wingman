@@ -51,7 +51,7 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | ROADMAP + README polish | ✅ | Clear positioning; SDK resume ≠ TTY typing |
 | Codex wait/steer/approvals | ✅ | `wait_turn`, `steer`, `list_approvals`, `resolve_approval` tools; mock coverage |
 | Claude wait_turn parity | ✅ | `wait_turn` for Claude sessions; soft stubs for steer/approvals with clear errors |
-| Codex model override | ✅ | `WINGMAN_CODEX_MODEL` env var + `model` arg on `create_session`; doctor checks for ChatGPT-incompatible models |
+| Codex model override | ✅ | `WINGMAN_CODEX_MODEL` env var + `model` arg on `create_session`; doctor checks for models that may require API access |
 | Host identity / multi-host | ✅ | `WINGMAN_HOST_ID`/`WINGMAN_HOST_NAME` config; `hostId`/`hostName` in session responses; [multi-host guide](docs/hosts/multi-host.md) |
 
 ### Next

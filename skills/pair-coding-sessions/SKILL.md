@@ -102,15 +102,15 @@ Sessions include a `source` field: `'wingman'` (created via Wingman) or `'discov
 | Claude | Mock | `CLAUDE_MOCK=1` | In-memory sessions + mock discovered sessions |
 | Claude | Real | unset mock | Agent SDK spawns Claude subprocess |
 
-### Codex model override (ChatGPT account fix)
+### Codex model override
 
-If `~/.codex/config.toml` has a model like `gpt-6-sol` that requires API access, creating sessions fails with ChatGPT accounts. Fix:
+By default, Wingman uses whatever model is configured in `~/.codex/config.toml` or Codex's built-in defaults. Override only when you intentionally need a different model for Wingman sessions:
 
 ```bash
-export WINGMAN_CODEX_MODEL="gpt-4.1"  # or pass model arg to create_session
+export WINGMAN_CODEX_MODEL="your-preferred-model"  # or pass model arg to create_session
 ```
 
-Run `wingman-doctor` to detect incompatible models.
+If session creation fails due to model access, either ensure you have the required API access, or let Codex pick its default by not setting a model override. Run `wingman-doctor` to check for models that may require API access.
 
 ### Claude environment variables
 

@@ -152,7 +152,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
           prompt: z.string().optional(),
           name: z.string().optional(),
           tags: z.array(z.string()).optional(),
-          model: z.string().optional().describe('Model override for Codex sessions (e.g., gpt-4.1 for ChatGPT accounts). Ignored for other providers.'),
+          model: z.string().optional().describe('Model override for Codex sessions. Optional; defaults to Codex config/defaults. Ignored for other providers.'),
         },
       },
       async (args) => handlers.create_session(CreateSessionSchema.parse(args)),
