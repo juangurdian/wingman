@@ -4,9 +4,14 @@
 
 Wingman is an **MCP radio link** — not a multi-agent IDE, not an orchestrator, not a browser automation tool.
 
-**What it is**: A lightweight TypeScript bridge + CLI that lets remote MCP hosts (Grok Bot, Cursor, etc.) talk to local coding-agent sessions (Codex, Claude Code) running on your machine. You pair once, expose a tunnel, and the remote host can list sessions, read transcripts, send messages, and interrupt turns — while you still see the session locally.
+**What it is**: A lightweight TypeScript bridge + CLI that lets remote MCP hosts (Grok Bot, Cursor, Muse Code, etc.) talk to local coding-agent sessions (Codex, Claude Code) running on your machine. You pair once, expose a tunnel, and the remote host can list sessions, read transcripts, send messages, and interrupt turns — while you still see the session locally.
 
 **What it isn't**: Wingman does not attempt to be Omnigent, AgentBridge, or a Claude Orchestrator. It deliberately stays thin: one local binary, bearer auth, and a handful of MCP tools. If you need multi-agent coordination, dynamic tool injection, or browser automation of claude.ai — use those other tools.
+
+### Hosts vs Providers
+
+- **Hosts**: MCP clients that connect to Wingman — Grok Bot, Cursor, Muse Code, etc.
+- **Providers**: Session backends that Wingman manages — Codex, Claude Code, and (optionally) Muse sessions
 
 ## Why Wingman?
 
@@ -20,14 +25,15 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 
 ## Common Use Cases
 
-1. **Remote pair programming** — Grok Bot or Cursor cloud agent drives a local Codex/Claude session while you watch and intervene
+1. **Remote pair programming** — Grok Bot, Cursor, or Muse Code drives a local Codex/Claude session while you watch and intervene
 2. **CI/CD agent handoff** — A cloud agent hands off complex local tasks to a Codex session on a dev machine
 3. **Multi-model collaboration** — Use Grok to orchestrate work that Claude Code executes locally
-4. **Session resume** — Read transcripts from past sessions without retyping context
-5. **Headless local agent** — Run Codex/Claude headless on a dev server, control via MCP from anywhere
-6. **Live debugging assist** — Cloud assistant reads your local session's error output and suggests fixes
-7. **Approval workflows** — Cloud agent sends tasks; you approve locally before execution
-8. **Session discovery** — List and resume Claude Code sessions created outside Wingman via SDK discovery
+4. **Multi-host collaboration** — Muse users and Grok users share the same Wingman tunnel to collaborate on sessions
+5. **Session resume** — Read transcripts from past sessions without retyping context
+6. **Headless local agent** — Run Codex/Claude headless on a dev server, control via MCP from anywhere
+7. **Live debugging assist** — Cloud assistant reads your local session's error output and suggests fixes
+8. **Approval workflows** — Cloud agent sends tasks; you approve locally before execution
+9. **Session discovery** — List and resume Claude Code sessions created outside Wingman via SDK discovery
 
 ## Backlog
 
@@ -61,11 +67,25 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | Feature | Description |
 |---------|-------------|
 | Claude Channels / live-visible path | Real-time streaming via SSE when Claude supports it |
-| Multi-host guides | ✅ Shipped — see [`docs/hosts/`](docs/hosts/) for Cursor, Claude Desktop (with limitations), generic clients |
+| Multi-host guides | ✅ Shipped — see [`docs/hosts/`](docs/hosts/) for Cursor, Muse Code, Claude Desktop (with limitations), generic clients |
+| Muse Code host guide | ✅ Shipped — [docs/hosts/muse-code.md](docs/hosts/muse-code.md) |
+| Muse provider (MSP) | 🔄 In progress — Muse as a provider via `muse serve` / `@muse-code/sdk` (see below) |
 | Named sessions | Human-friendly session names across providers |
 | Session export | ✅ Shipped — `export_transcript` tool exports as Markdown/JSON to `~/.wingman/exports/` |
 | Web dashboard | Local-only status page for paired sessions |
 | Plugin architecture | Provider plugins beyond Codex/Claude |
+
+### Muse Provider Roadmap
+
+The Muse provider enables Grok and Cursor hosts to interact with Muse Code sessions via Wingman.
+
+| Phase | Status | Description |
+|-------|--------|-------------|
+| Muse as host | ✅ Shipped | Muse Code connects to Wingman to access Codex/Claude sessions |
+| Muse provider stub | ✅ Shipped | `MUSE_MOCK=1` mode for testing MCP wiring |
+| MSP full integration | 🔜 Next | Real `muse serve` / SDK integration when API stabilizes |
+
+**Note**: The Muse provider does NOT claim TTY hijack of arbitrary Muse TUIs. Like Claude, it manages Wingman-owned / MSP sessions, not interactive terminals.
 
 > **Multi-host guides note**: Claude Desktop support is documented as limited — it uses stdio-based MCP, not HTTP. The guide includes honest documentation of workarounds. Cursor IDE and remote hosts (Grok Bot) have full support.
 

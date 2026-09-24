@@ -1,6 +1,6 @@
 # Wingman
 
-**Your coding agent's wingman** — a TypeScript MCP bridge + pair CLI so Grok Bot (and other MCP hosts) can talk to live Codex and Claude Code sessions on your machine while you still see the session.
+**Your coding agent's wingman** — a TypeScript MCP bridge + pair CLI so Grok Bot, Cursor, Muse Code (and other MCP hosts) can talk to live Codex and Claude Code sessions on your machine while you still see the session.
 
 Dual-provider: Codex (app-server) + Claude Code (Agent SDK).
 
@@ -84,6 +84,7 @@ Different MCP hosts have different configuration methods. See the detailed guide
 |------|---------|-------|
 | **Grok Bot** | ✅ Full | [docs/hosts/remote-hosts.md](docs/hosts/remote-hosts.md) |
 | **Cursor IDE** | ✅ Full | [docs/hosts/cursor-ide.md](docs/hosts/cursor-ide.md) |
+| **Muse Code** | ✅ Full | [docs/hosts/muse-code.md](docs/hosts/muse-code.md) |
 | **Claude Desktop** | ⚠️ Limited | [docs/hosts/claude-desktop.md](docs/hosts/claude-desktop.md) |
 | **Other clients** | Varies | [docs/hosts/generic-mcp-client.md](docs/hosts/generic-mcp-client.md) |
 
@@ -134,7 +135,9 @@ Docs: [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [Claude A
 ```mermaid
 flowchart LR
   subgraph cloud [Cloud]
-    Grok[Grok Bot / MCP host]
+    Grok[Grok Bot]
+    Cursor[Cursor IDE]
+    Muse[Muse Code]
   end
   subgraph user [User machine]
     Tunnel[cloudflared / Tailscale]
@@ -142,7 +145,10 @@ flowchart LR
     Codex[Codex app-server\nJSON-RPC stdio]
     Claude[Claude Agent SDK\ndiscovery + resume]
   end
-  Grok -->|HTTPS + Bearer| Tunnel --> Bridge
+  Grok -->|HTTPS + Bearer| Tunnel
+  Cursor -->|HTTPS + Bearer| Tunnel
+  Muse -->|HTTPS + Bearer| Tunnel
+  Tunnel --> Bridge
   Bridge --> Codex
   Bridge --> Claude
 ```

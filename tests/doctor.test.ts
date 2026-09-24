@@ -4,6 +4,7 @@ describe('Doctor checks', () => {
   beforeEach(() => {
     vi.stubEnv('CLAUDE_MOCK', '1');
     vi.stubEnv('CODEX_MOCK', '1');
+    vi.stubEnv('MUSE_MOCK', '1');
   });
 
   afterEach(() => {
@@ -59,17 +60,27 @@ describe('Doctor checks', () => {
     expect(result.message).toContain('CODEX_MOCK');
   });
 
+  it('checkMuseBinary passes when MUSE_MOCK=1', async () => {
+    const { checkMuseBinary } = await import('../src/doctor.js');
+    const result = await checkMuseBinary();
+
+    expect(result.name).toBe('Muse binary');
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('MUSE_MOCK');
+  });
+
   it('runAllChecks returns all check results', async () => {
     const { runAllChecks } = await import('../src/doctor.js');
     const results = await runAllChecks();
 
-    expect(results.length).toBe(5);
+    expect(results.length).toBe(6);
     expect(results.map((r) => r.name)).toEqual([
       'Node.js version',
       'Config file',
       'Port availability',
       'Claude Agent SDK',
       'Codex binary',
+      'Muse binary',
     ]);
   });
 

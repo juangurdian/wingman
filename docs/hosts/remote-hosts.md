@@ -17,7 +17,10 @@ Wingman bridges this gap: you run it locally, expose it via a tunnel, and the re
 |------|----------|-------------|--------|
 | **Grok Bot** | ✅ | ✅ | ✅ Full support |
 | **Cursor Cloud Agents** | ✅ | ✅ | ✅ Full support |
+| **Muse Code** | ✅ | ✅ | ✅ Full support |
 | **Custom MCP hosts** | ✅ | ✅ | ✅ If HTTP + headers supported |
+
+> **Muse Code users**: See [muse-code.md](muse-code.md) for Muse-specific configuration and multi-host scenarios.
 
 ## Grok Bot Setup
 
@@ -138,6 +141,9 @@ Approve the sudo command in approval appr_456
 │  │   Cursor    │ ───── HTTPS + Bearer ─────┤                │
 │  │Cloud Agents │                           │                │
 │  └─────────────┘                           │                │
+│  ┌─────────────┐                           │                │
+│  │  Muse Code  │ ───── HTTPS + Bearer ─────┤                │
+│  └─────────────┘                           │                │
 └────────────────────────────────────────────│────────────────┘
                                              │
                                              ▼
@@ -155,6 +161,8 @@ Approve the sudo command in approval appr_456
 │                      └─────────────┘     └─────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+Multiple hosts (Grok, Cursor, Muse) can share the same Wingman tunnel simultaneously. Each host registers the same URL and token.
 
 ## Security Best Practices
 
@@ -208,6 +216,7 @@ WINGMAN_HEALTHZ_AUTH_FREE=1 npx wingman-mcp
 
 ## Related Guides
 
+- [Muse Code](muse-code.md) — Muse Code setup and multi-host scenarios
 - [Cursor IDE](cursor-ide.md) — Desktop IDE with remote MCP support
 - [Claude Desktop](claude-desktop.md) — Limitations and workarounds
 - [Generic MCP Client](generic-mcp-client.md) — Protocol details and checklist

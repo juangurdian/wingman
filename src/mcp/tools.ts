@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { ProviderRegistry, ProviderName } from '../providers/index.js';
 import type { Transcript, TranscriptItem } from '../providers/types.js';
 
-export const ProviderSchema = z.enum(['codex', 'claude']);
+export const ProviderSchema = z.enum(['codex', 'claude', 'muse']);
 export const ExportFormatSchema = z.enum(['markdown', 'json']);
 
 export const ListSessionsSchema = z.object({
@@ -108,7 +108,7 @@ export function createToolHandlers(providers: ProviderRegistry) {
       try {
         const names: ProviderName[] = args.provider
           ? [args.provider]
-          : ['codex', 'claude'];
+          : ['codex', 'claude', 'muse'];
         const sessions = [];
         for (const name of names) {
           try {
@@ -119,6 +119,13 @@ export function createToolHandlers(providers: ProviderRegistry) {
               sessions.push({
                 id: '_claude_stub',
                 provider: 'claude' as const,
+                preview: err instanceof Error ? err.message : String(err),
+                status: 'not_enabled',
+              });
+            } else if (name === 'muse') {
+              sessions.push({
+                id: '_muse_stub',
+                provider: 'muse' as const,
                 preview: err instanceof Error ? err.message : String(err),
                 status: 'not_enabled',
               });
