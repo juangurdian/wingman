@@ -20,9 +20,8 @@ import {
   loadConfig,
   resolvePort,
   resolveCodexModel,
-  isCodexModelChatGptIncompatible,
-  CODEX_CHATGPT_SAFE_MODEL,
-  CODEX_CHATGPT_INCOMPATIBLE_MODELS,
+  isCodexModelApiOnly,
+  CODEX_API_ONLY_MODELS,
   resolveHostId,
   resolveHostName,
 } from './config.js';
@@ -312,9 +311,9 @@ export async function checkMuseBinary(): Promise<CheckResult> {
 }
 
 /**
- * Check if the configured Codex model is compatible with ChatGPT accounts.
- * This helps users who have model = "gpt-6-sol" in their ~/.codex/config.toml
- * but are using a ChatGPT subscription (not API access).
+ * Check if the configured Codex model may require API access.
+ * This is advisory only — Wingman does not recommend specific fallback models.
+ * Users should use their session's model, Codex defaults, or explicit overrides.
  */
 export async function checkCodexModel(): Promise<CheckResult> {
   if (process.env.CODEX_MOCK === '1' || process.env.CODEX_MOCK === 'true') {
@@ -328,12 +327,13 @@ export async function checkCodexModel(): Promise<CheckResult> {
   // Check for WINGMAN_CODEX_MODEL env override first
   const envModel = resolveCodexModel();
   if (envModel) {
-    if (isCodexModelChatGptIncompatible(envModel)) {
+    if (isCodexModelApiOnly(envModel)) {
       return {
         name: 'Codex model config',
         status: 'warn',
-        message: `WINGMAN_CODEX_MODEL="${envModel}" may not work with ChatGPT accounts`,
-        fix: `If using ChatGPT (not API), set WINGMAN_CODEX_MODEL="${CODEX_CHATGPT_SAFE_MODEL}" or another supported model`,
+        message: `WINGMAN_CODEX_MODEL="${envModel}" may require API access`,
+        fix: `If you have API access, this model should work. For ChatGPT-only accounts, ` +
+          `use a model your plan supports, or unset the override to let Codex pick its default.`,
       };
     }
     return {
@@ -359,19 +359,20 @@ export async function checkCodexModel(): Promise<CheckResult> {
     const modelMatch = content.match(/^\s*model\s*=\s*["']([^"']+)["']/m);
     if (modelMatch) {
       const configModel = modelMatch[1];
-      if (isCodexModelChatGptIncompatible(configModel)) {
+      if (isCodexModelApiOnly(configModel)) {
         return {
           name: 'Codex model config',
           status: 'warn',
-          message: `~/.codex/config.toml has model="${configModel}" (ChatGPT-incompatible)`,
-          fix: `Set WINGMAN_CODEX_MODEL="${CODEX_CHATGPT_SAFE_MODEL}" to override, or edit ~/.codex/config.toml. ` +
-            `Models requiring API access: ${CODEX_CHATGPT_INCOMPATIBLE_MODELS.join(', ')}`,
+          message: `~/.codex/config.toml has model="${configModel}" (may require API access)`,
+          fix: `If you have API access, keep this model. For ChatGPT-only accounts: ` +
+            `use a model your plan supports, or unset \`model\` in config to let Codex pick its default. ` +
+            `Override for Wingman only via WINGMAN_CODEX_MODEL or create_session.model.`,
         };
       }
       return {
         name: 'Codex model config',
         status: 'pass',
-        message: `~/.codex/config.toml has model="${configModel}" (compatible)`,
+        message: `~/.codex/config.toml has model="${configModel}"`,
       };
     }
     return {

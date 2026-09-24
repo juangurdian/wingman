@@ -35,7 +35,7 @@ export const CreateSessionSchema = z.object({
   prompt: z.string().optional(),
   name: z.string().optional(),
   tags: z.array(z.string()).optional(),
-  /** Model override for Codex sessions (e.g., 'gpt-4.1' for ChatGPT accounts). Ignored for other providers. */
+  /** Model override for Codex sessions. Optional; defaults to Codex config/defaults. Ignored for other providers. */
   model: z.string().optional(),
 });
 

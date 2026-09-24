@@ -66,7 +66,7 @@ Environment:
   WINGMAN_TOKEN         Override token (otherwise reused from config or generated)
   WINGMAN_HOST_ID       Machine identifier for multi-host setups
   WINGMAN_HOST_NAME     Human-friendly host name for display
-  WINGMAN_CODEX_MODEL   Override Codex model (e.g., gpt-4.1 for ChatGPT accounts)
+  WINGMAN_CODEX_MODEL   Override Codex model for Wingman sessions (optional)
 
 Real mode:
   Codex:  requires \`codex\` on PATH (uses \`codex app-server\` JSON-RPC)

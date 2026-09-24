@@ -162,7 +162,7 @@ flowchart LR
 | `read_transcript` | `provider`, `session_id`, `limit?` | Recent messages (newest at end) |
 | `send_message` | `provider`, `session_id`, `text` | Codex: `turn/start`; Claude: returns `accepted` quickly, turn runs async |
 | `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`; Claude: works when Wingman owns the active turn |
-| `create_session` | `provider`, `cwd?`, `prompt?`, `name?`, `tags?`, `model?` | Codex: `thread/start` with optional model override; Claude: new session with optional name/tags (async) |
+| `create_session` | `provider`, `cwd?`, `prompt?`, `name?`, `tags?`, `model?` | Codex: `thread/start` with optional model override; Claude: new session with optional name/tags (async). Model defaults to Codex config/defaults when not specified. |
 | `wait_turn` | `provider`, `session_id`, `timeout_ms?`, `poll_interval_ms?` | Wait for turn to complete/fail/timeout; returns status + message snippet |
 | `steer` | `provider`, `session_id`, `text` | Add guidance to in-flight turn (Codex only; Claude returns unsupported) |
 | `list_approvals` | `provider`, `session_id` | List pending approvals (Codex); Claude returns empty array |
@@ -180,22 +180,22 @@ For **Codex sessions**, `create_session` calls `thread/start` and returns `{ ses
 
 ### Codex model override
 
-If your `~/.codex/config.toml` has a model like `gpt-6-sol` that requires API access, creating Codex sessions with a ChatGPT account will fail. You can override the model:
+By default, Wingman does **not** override the Codex model — it uses whatever is configured in `~/.codex/config.toml` or Codex's built-in defaults. Override only when you intentionally need a different model for Wingman-created sessions:
 
-**Via environment variable** (recommended):
+**Via environment variable**:
 ```bash
-export WINGMAN_CODEX_MODEL="gpt-4.1"
+export WINGMAN_CODEX_MODEL="your-preferred-model"
 npx wingman-mcp
 ```
 
 **Via create_session argument** (per-session):
 ```json
-{ "provider": "codex", "model": "gpt-4.1", "prompt": "Hello" }
+{ "provider": "codex", "model": "your-preferred-model", "prompt": "Hello" }
 ```
 
-**Priority order**: `create_session.model` > `WINGMAN_CODEX_MODEL` env > user's `~/.codex/config.toml`
+**Priority order**: `create_session.model` > `WINGMAN_CODEX_MODEL` env > user's `~/.codex/config.toml` > Codex defaults
 
-Run `wingman-doctor` to check for ChatGPT-incompatible models in your config.
+**Note**: Some models may require API access rather than a ChatGPT subscription. If session creation fails due to model access, either ensure you have the required access level, or let Codex pick its default by not setting a model override. Run `wingman-doctor` to check for models that may require API access.
 
 ### send_message behavior
 
@@ -289,7 +289,7 @@ Example Codex approval flow:
 | `CODEX_BIN` | `codex` | Path to Codex CLI binary |
 | `CODEX_APP_SERVER_ARGS` | `app-server` | Args passed to Codex binary |
 | `CODEX_RPC_TIMEOUT_MS` | `60000` | JSON-RPC timeout |
-| `WINGMAN_CODEX_MODEL` | unset | Override Codex model (e.g., `gpt-4.1` for ChatGPT accounts) |
+| `WINGMAN_CODEX_MODEL` | unset | Override Codex model for Wingman sessions (optional; defaults to Codex config/defaults) |
 
 ### Claude
 
