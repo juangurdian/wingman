@@ -523,3 +523,92 @@ describe('MuseProvider mock mode - session metadata', () => {
     expect(result.error).toMatch(/session not found/i);
   });
 });
+
+describe('MuseProvider real mode (MUSE_MOCK unset) - requires mock', () => {
+  beforeEach(() => {
+    vi.stubEnv('MUSE_MOCK', '0');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const EXPECTED_ERROR = /muse provider requires muse_mock=1/i;
+
+  it('listSessions throws clear error in real mode', async () => {
+    const { MuseProvider } = await import('../src/providers/muse.js');
+    const provider = new MuseProvider();
+    
+    await expect(provider.listSessions()).rejects.toThrow(EXPECTED_ERROR);
+  });
+
+  it('createSession throws clear error in real mode (no ghost sessions)', async () => {
+    const { MuseProvider } = await import('../src/providers/muse.js');
+    const provider = new MuseProvider();
+    
+    await expect(provider.createSession({ cwd: '/tmp/test' })).rejects.toThrow(EXPECTED_ERROR);
+  });
+
+  it('getSession throws clear error in real mode', async () => {
+    const { MuseProvider } = await import('../src/providers/muse.js');
+    const provider = new MuseProvider();
+    
+    await expect(provider.getSession('any-session')).rejects.toThrow(EXPECTED_ERROR);
+  });
+
+  it('sendMessage throws clear error in real mode', async () => {
+    const { MuseProvider } = await import('../src/providers/muse.js');
+    const provider = new MuseProvider();
+    
+    await expect(provider.sendMessage('any-session', 'hello')).rejects.toThrow(EXPECTED_ERROR);
+  });
+
+  it('readTranscript throws clear error in real mode', async () => {
+    const { MuseProvider } = await import('../src/providers/muse.js');
+    const provider = new MuseProvider();
+    
+    await expect(provider.readTranscript('any-session')).rejects.toThrow(EXPECTED_ERROR);
+  });
+
+  it('interrupt throws clear error in real mode', async () => {
+    const { MuseProvider } = await import('../src/providers/muse.js');
+    const provider = new MuseProvider();
+    
+    await expect(provider.interrupt('any-session')).rejects.toThrow(EXPECTED_ERROR);
+  });
+
+  it('waitTurn throws clear error in real mode', async () => {
+    const { MuseProvider } = await import('../src/providers/muse.js');
+    const provider = new MuseProvider();
+    
+    await expect(provider.waitTurn('any-session')).rejects.toThrow(EXPECTED_ERROR);
+  });
+
+  it('setSessionMeta throws clear error in real mode', async () => {
+    const { MuseProvider } = await import('../src/providers/muse.js');
+    const provider = new MuseProvider();
+    
+    await expect(provider.setSessionMeta('any-session', { name: 'test' })).rejects.toThrow(EXPECTED_ERROR);
+  });
+
+  it('steer throws clear error in real mode', async () => {
+    const { MuseProvider } = await import('../src/providers/muse.js');
+    const provider = new MuseProvider();
+    
+    await expect(provider.steer('any-session', 'guidance')).rejects.toThrow(EXPECTED_ERROR);
+  });
+
+  it('listApprovals throws clear error in real mode', async () => {
+    const { MuseProvider } = await import('../src/providers/muse.js');
+    const provider = new MuseProvider();
+    
+    await expect(provider.listApprovals('any-session')).rejects.toThrow(EXPECTED_ERROR);
+  });
+
+  it('resolveApproval throws clear error in real mode', async () => {
+    const { MuseProvider } = await import('../src/providers/muse.js');
+    const provider = new MuseProvider();
+    
+    await expect(provider.resolveApproval('any-session', 'any-approval', 'accept')).rejects.toThrow(EXPECTED_ERROR);
+  });
+});
