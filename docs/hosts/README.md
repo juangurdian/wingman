@@ -11,6 +11,7 @@ Connect Wingman to various MCP hosts. Choose your host below.
 | **Muse Code** | ✅ Remote | ✅ Full | [muse-code.md](muse-code.md) |
 | **Claude Desktop** | ❌ Stdio | ⚠️ Limited | [claude-desktop.md](claude-desktop.md) |
 | **Custom clients** | Varies | Depends | [generic-mcp-client.md](generic-mcp-client.md) |
+| **Multi-Host Setup** | N/A | ✅ Full | [multi-host.md](multi-host.md) |
 
 ## Wingman's Architecture
 
@@ -43,6 +44,10 @@ Honest documentation of limitations. Claude Desktop uses stdio-based MCP, not HT
 ### [Generic MCP Client Checklist](generic-mcp-client.md)
 
 Requirements and protocol details for any MCP-compatible client. Use this to evaluate compatibility.
+
+### [Multi-Host Setup](multi-host.md)
+
+Running Wingman on multiple machines (e.g., Windows + Mac) with host labels so MCP clients can tell sessions apart. Includes setup for multiple connectors and future mesh gateway plans.
 
 ## Common Setup Pattern
 

@@ -16,6 +16,9 @@ import {
   loadConfig,
   mcpUrl,
   configPath,
+  resolveHostId,
+  resolveHostName,
+  resolveCodexModel,
   type BridgeConfig,
 } from './config.js';
 import { startMcpServer } from './mcp/server.js';
@@ -24,6 +27,7 @@ function parseArgs(argv: string[]) {
   let port: number | undefined;
   let host: string | undefined;
   let reuse = false;
+  let newToken = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--port' && argv[i + 1]) {
@@ -32,26 +36,37 @@ function parseArgs(argv: string[]) {
       host = argv[++i];
     } else if (a === '--reuse-token') {
       reuse = true;
+    } else if (a === '--new-token') {
+      newToken = true;
     } else if (a === '--help' || a === '-h') {
       printHelp();
       process.exit(0);
     }
   }
-  return { port, host, reuse };
+  return { port, host, reuse, newToken };
 }
 
 function printHelp() {
-  console.log(`Usage: wingman-pair [--port PORT] [--host HOST] [--reuse-token]
-       npx wingman-mcp [--port PORT] [--host HOST] [--reuse-token]
+  console.log(`Usage: wingman-pair [--port PORT] [--host HOST] [--new-token]
+       npx wingman-mcp [--port PORT] [--host HOST] [--new-token]
 
 Dual-provider MCP bridge for Codex and Claude Code.
+
+Options:
+  --port PORT           Server port (default 3847, or WINGMAN_PORT env)
+  --host HOST           Bind host (default 127.0.0.1, or WINGMAN_HOST env)
+  --new-token           Generate a fresh token (default: reuse existing)
+  --reuse-token         Explicitly reuse existing token (now the default)
 
 Environment:
   CODEX_MOCK=1          Use in-memory Codex mock (no codex binary)
   CLAUDE_MOCK=1         Use in-memory Claude mock (no Claude SDK)
   WINGMAN_PORT          Server port (default 3847)
   WINGMAN_HOST          Bind host (default 127.0.0.1)
-  WINGMAN_TOKEN         Override token (otherwise auto-generated)
+  WINGMAN_TOKEN         Override token (otherwise reused from config or generated)
+  WINGMAN_HOST_ID       Machine identifier for multi-host setups
+  WINGMAN_HOST_NAME     Human-friendly host name for display
+  WINGMAN_CODEX_MODEL   Override Codex model (e.g., gpt-4.1 for ChatGPT accounts)
 
 Real mode:
   Codex:  requires \`codex\` on PATH (uses \`codex app-server\` JSON-RPC)
@@ -79,6 +94,9 @@ function printPairInstructions(cfg: BridgeConfig, localUrl: string) {
   const tunnelHint = `https://YOUR-TUNNEL-HOST/mcp`;
   const authHeader = `Bearer ${cfg.token}`;
   const mockDisplay = getMockModeDisplay();
+  const hostId = cfg.hostId ?? resolveHostId();
+  const hostName = cfg.hostName ?? resolveHostName();
+  const codexModel = resolveCodexModel();
 
   console.log(`
 ╔══════════════════════════════════════════════════════════════════╗
@@ -90,6 +108,8 @@ Config written: ${configPath()}
 Local MCP URL:  ${localUrl}
 Token:          ${cfg.token}
 Mock mode:      ${mockDisplay}
+Host ID:        ${hostId}
+Host Name:      ${hostName}${codexModel ? `\nCodex Model:    ${codexModel} (override active)` : ''}
 
 ────────────────────────────────────────────────────────────────────
 TUNNEL SETUP (required for remote access)
@@ -170,11 +190,20 @@ async function main() {
     process.env.CODEX_MOCK = '1';
   }
 
+  // Token precedence: WINGMAN_TOKEN env > existing config (default reuse) > generate new
+  // Default: reuse existing token to avoid printing new tokens in logs (security concern)
+  // Use --new-token to explicitly generate a fresh token
   let token = resolveToken();
-  if (!token && args.reuse) {
-    token = loadConfig()?.token;
+  const existingConfig = loadConfig();
+  if (!token && existingConfig?.token && !args.newToken) {
+    // Default: reuse existing token when config exists
+    token = existingConfig.token;
+    console.error('[wingman] Reusing existing token from config (use --new-token to regenerate)');
   }
   if (!token) token = generateToken();
+
+  const hostId = resolveHostId();
+  const hostName = resolveHostName();
 
   const cfg: BridgeConfig = {
     token,
@@ -183,6 +212,8 @@ async function main() {
     mcpPath: '/mcp',
     createdAt: new Date().toISOString(),
     mock,
+    hostId,
+    hostName,
   };
   saveConfig(cfg);
 

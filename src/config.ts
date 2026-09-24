@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
@@ -10,6 +10,10 @@ export interface BridgeConfig {
   mcpPath: string;
   createdAt: string;
   mock?: boolean;
+  /** Host identifier for multi-host setups (e.g., 'pearlwolf', 'macbook-pro') */
+  hostId?: string;
+  /** Human-friendly host name for display (e.g., 'Pearlwolf Windows', 'MacBook Pro') */
+  hostName?: string;
 }
 
 /** Preferred config directory (~/.wingman). */
@@ -119,4 +123,71 @@ export function resolveWaitTurnPollMs(): number {
 export function isHealthzAuthFree(): boolean {
   const env = process.env.WINGMAN_HEALTHZ_AUTH_FREE?.trim().toLowerCase();
   return env === '1' || env === 'true';
+}
+
+// Codex model configuration
+
+/** 
+ * Default-safe Codex model for ChatGPT accounts.
+ * The gpt-6-sol and similar advanced models require API access.
+ * ChatGPT accounts should use gpt-4.1 or similar supported models.
+ */
+export const CODEX_CHATGPT_SAFE_MODEL = 'gpt-4.1';
+
+/**
+ * Models known to be incompatible with ChatGPT accounts.
+ * These require API access (not ChatGPT subscription).
+ */
+export const CODEX_CHATGPT_INCOMPATIBLE_MODELS = [
+  'gpt-6-sol',
+  'gpt-5-sol',
+  'gpt-6',
+  'gpt-5',
+  'o3',
+  'o3-mini',
+];
+
+/**
+ * Resolve Codex model to use for new sessions.
+ * Priority: explicit arg > WINGMAN_CODEX_MODEL env > undefined (use Codex default/config)
+ */
+export function resolveCodexModel(explicit?: string): string | undefined {
+  if (explicit?.trim()) return explicit.trim();
+  const env = process.env.WINGMAN_CODEX_MODEL?.trim();
+  if (env) return env;
+  return undefined;
+}
+
+/**
+ * Check if a model is likely incompatible with ChatGPT accounts.
+ */
+export function isCodexModelChatGptIncompatible(model: string): boolean {
+  const normalized = model.toLowerCase().trim();
+  return CODEX_CHATGPT_INCOMPATIBLE_MODELS.some(
+    (m) => normalized === m.toLowerCase() || normalized.startsWith(`${m.toLowerCase()}-`)
+  );
+}
+
+// Host identity configuration
+
+/**
+ * Resolve the host ID for this Wingman instance.
+ * Priority: WINGMAN_HOST_ID env > hostname
+ */
+export function resolveHostId(): string {
+  const env = process.env.WINGMAN_HOST_ID?.trim();
+  if (env) return env;
+  return hostname();
+}
+
+/**
+ * Resolve the host name (human-friendly) for this Wingman instance.
+ * Priority: WINGMAN_HOST_NAME env > WINGMAN_HOST_ID env > hostname
+ */
+export function resolveHostName(): string {
+  const nameEnv = process.env.WINGMAN_HOST_NAME?.trim();
+  if (nameEnv) return nameEnv;
+  const idEnv = process.env.WINGMAN_HOST_ID?.trim();
+  if (idEnv) return idEnv;
+  return hostname();
 }

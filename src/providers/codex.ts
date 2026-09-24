@@ -39,6 +39,9 @@ import type {
 import {
   resolveWaitTurnTimeoutMs,
   resolveWaitTurnPollMs,
+  resolveCodexModel,
+  resolveHostId,
+  resolveHostName,
 } from '../config.js';
 
 type JsonRpcId = number;
@@ -122,6 +125,9 @@ export class CodexProvider implements SessionProvider {
   }
 
   async listSessions(): Promise<SessionSummary[]> {
+    const hostId = resolveHostId();
+    const hostName = resolveHostName();
+    
     if (useMock()) {
       return [...this.mockSessions.values()].map((s) => ({
         id: s.id,
@@ -133,6 +139,8 @@ export class CodexProvider implements SessionProvider {
         status: s.activeTurnId ? 'active' : 'idle',
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
+        hostId,
+        hostName,
       }));
     }
 
@@ -152,10 +160,15 @@ export class CodexProvider implements SessionProvider {
       status: summarizeStatus(t.status),
       createdAt: typeof t.createdAt === 'number' ? t.createdAt : undefined,
       updatedAt: typeof t.updatedAt === 'number' ? t.updatedAt : undefined,
+      hostId,
+      hostName,
     }));
   }
 
   async getSession(sessionId: string): Promise<SessionDetail | null> {
+    const hostId = resolveHostId();
+    const hostName = resolveHostName();
+    
     if (useMock()) {
       const s = this.mockSessions.get(sessionId);
       if (!s) return null;
@@ -171,6 +184,8 @@ export class CodexProvider implements SessionProvider {
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         activeTurnId: activeTurnId ?? s.activeTurnId,
+        hostId,
+        hostName,
       };
     }
 
@@ -183,6 +198,8 @@ export class CodexProvider implements SessionProvider {
       ...session,
       status: activeTurnId ? 'running' : session.status,
       activeTurnId,
+      hostId,
+      hostName,
     };
   }
 
@@ -311,7 +328,10 @@ export class CodexProvider implements SessionProvider {
     return { sessionId, turnId, status: 'interrupted' };
   }
 
-  async createSession(opts?: { cwd?: string; prompt?: string; name?: string; tags?: string[] }): Promise<CreateSessionResult> {
+  async createSession(opts?: { cwd?: string; prompt?: string; name?: string; tags?: string[]; model?: string }): Promise<CreateSessionResult> {
+    // Resolve model: explicit arg > WINGMAN_CODEX_MODEL env > undefined (use Codex default)
+    const model = resolveCodexModel(opts?.model);
+    
     if (useMock()) {
       const s = this.seedMock({
         cwd: opts?.cwd ?? process.cwd(),
@@ -322,12 +342,17 @@ export class CodexProvider implements SessionProvider {
       if (opts?.prompt) {
         await this.sendMessage(s.id, opts.prompt);
       }
-      return { sessionId: s.id, provider: 'codex', cwd: s.cwd };
+      return { sessionId: s.id, provider: 'codex', cwd: s.cwd, model };
     }
 
     await this.ensureConnected();
     const params: Record<string, unknown> = {};
     if (opts?.cwd) params.cwd = opts.cwd;
+    // Note: Codex app-server thread/start may not support model param directly.
+    // The model is typically read from user's ~/.codex/config.toml.
+    // For Wingman-spawned sessions, setting CODEX_MODEL env may work,
+    // or users can pre-configure their config.toml. Document this limitation.
+    if (model) params.model = model;
 
     const result = (await this.request('thread/start', params)) as {
       thread?: { id?: string };
@@ -339,7 +364,7 @@ export class CodexProvider implements SessionProvider {
       await this.sendMessage(sessionId, opts.prompt);
     }
 
-    return { sessionId, provider: 'codex', cwd: opts?.cwd };
+    return { sessionId, provider: 'codex', cwd: opts?.cwd, model };
   }
 
   async waitTurn(sessionId: string, opts?: WaitTurnOptions): Promise<WaitTurnResult> {

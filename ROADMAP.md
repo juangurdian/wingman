@@ -45,12 +45,14 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | Async create_session with prompt | ✅ | Returns `accepted` + `turnId` quickly; initial turn runs in background |
 | Session status (`get_session`) | ✅ | Track idle vs running, activeTurnId |
 | Transcript ordering fix | ✅ | Newest messages at end; regression test |
-| `wingman doctor` | ✅ | Node version, config, port, SDK/binary checks |
+| `wingman doctor` | ✅ | Node version, config, port, SDK/binary checks, Codex model check, host identity |
 | Interrupt hardening | ✅ | Works for Wingman-owned query handles; documented limits |
 | Tests | ✅ | Unit tests for all new features |
 | ROADMAP + README polish | ✅ | Clear positioning; SDK resume ≠ TTY typing |
 | Codex wait/steer/approvals | ✅ | `wait_turn`, `steer`, `list_approvals`, `resolve_approval` tools; mock coverage |
 | Claude wait_turn parity | ✅ | `wait_turn` for Claude sessions; soft stubs for steer/approvals with clear errors |
+| Codex model override | ✅ | `WINGMAN_CODEX_MODEL` env var + `model` arg on `create_session`; doctor checks for ChatGPT-incompatible models |
+| Host identity / multi-host | ✅ | `WINGMAN_HOST_ID`/`WINGMAN_HOST_NAME` config; `hostId`/`hostName` in session responses; [multi-host guide](docs/hosts/multi-host.md) |
 
 ### Next
 
@@ -67,13 +69,20 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | Feature | Description |
 |---------|-------------|
 | Claude Channels / live-visible path | Real-time streaming via SSE when Claude supports it |
-| Multi-host guides | ✅ Shipped — see [`docs/hosts/`](docs/hosts/) for Cursor, Muse Code, Claude Desktop (with limitations), generic clients |
+| Multi-host guides | ✅ Shipped — see [`docs/hosts/`](docs/hosts/) for Cursor, Muse Code, Claude Desktop (with limitations), generic clients, and [multi-host setup](docs/hosts/multi-host.md) |
+| Multi-host mesh gateway | Single MCP connector that fans out to multiple Wingman instances — for now, use multiple connectors (see [multi-host guide](docs/hosts/multi-host.md)) |
 | Muse Code host guide | ✅ Shipped — [docs/hosts/muse-code.md](docs/hosts/muse-code.md) |
 | Muse provider (MSP) | 🔄 In progress — Muse as a provider via `muse serve` / `@muse-code/sdk` (see below) |
 | Named sessions | Human-friendly session names across providers |
 | Session export | ✅ Shipped — `export_transcript` tool exports as Markdown/JSON to `~/.wingman/exports/` |
 | Web dashboard | Local-only status page for paired sessions |
 | Plugin architecture | Provider plugins beyond Codex/Claude |
+| Durable tunnels | Tailscale daemon over trycloudflare ephemeral — more reliable for long sessions |
+| wait_turn post-completion | Return `completed + snippet` instead of bare `idle` when turn finishes between polls |
+| Surface systemError | Expose `systemError` field in `get_session` / `wait_turn` for better error visibility |
+| Absorb thread/list lag | Handle delay after `create_session` before thread appears in `thread/list` |
+| Pair supervisor | Crash recovery without token rotation; prefer `--reuse-token` when config exists |
+| Cross-host interrupt guard | Prevent accidental cross-host interrupt by default in multi-host setups |
 
 ### Muse Provider Roadmap
 

@@ -24,6 +24,10 @@ export interface SessionSummary {
   tag?: string;
   /** User-set tags for categorization/filtering. */
   tags?: string[];
+  /** Host identifier for multi-host setups. */
+  hostId?: string;
+  /** Human-friendly host name for display. */
+  hostName?: string;
 }
 
 export interface TranscriptItem {
@@ -60,6 +64,8 @@ export interface CreateSessionResult {
   status?: 'created' | 'accepted';
   /** Turn ID when prompt is provided and status is 'accepted' */
   turnId?: string;
+  /** Model used for the session (Codex-specific; from explicit arg or WINGMAN_CODEX_MODEL) */
+  model?: string;
 }
 
 export interface SessionDetail extends SessionSummary {
@@ -155,6 +161,15 @@ export interface SetSessionMetaResult {
   error?: string;
 }
 
+export interface CreateSessionOptions {
+  cwd?: string;
+  prompt?: string;
+  name?: string;
+  tags?: string[];
+  /** Model override for Codex sessions (e.g., 'gpt-4.1' for ChatGPT accounts). */
+  model?: string;
+}
+
 export interface SessionProvider {
   readonly name: ProviderName;
   listSessions(): Promise<SessionSummary[]>;
@@ -162,7 +177,7 @@ export interface SessionProvider {
   readTranscript(sessionId: string, limit?: number): Promise<Transcript>;
   sendMessage(sessionId: string, text: string): Promise<SendMessageResult>;
   interrupt(sessionId: string): Promise<InterruptResult>;
-  createSession?(opts?: { cwd?: string; prompt?: string; name?: string; tags?: string[] }): Promise<CreateSessionResult>;
+  createSession?(opts?: CreateSessionOptions): Promise<CreateSessionResult>;
   
   /** Wait for an active turn to complete (Codex-specific) */
   waitTurn?(sessionId: string, opts?: WaitTurnOptions): Promise<WaitTurnResult>;

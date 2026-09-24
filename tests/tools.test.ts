@@ -1261,3 +1261,58 @@ describe('export_transcript tool', () => {
     createdFiles.push(body.path);
   });
 });
+
+describe('Codex graceful degradation', () => {
+  class MockCodexSpawnError implements SessionProvider {
+    readonly name = 'codex' as const;
+    async listSessions(): Promise<SessionSummary[]> {
+      throw new Error('spawn codex ENOENT');
+    }
+    async readTranscript(): Promise<Transcript> {
+      throw new Error('spawn codex ENOENT');
+    }
+    async sendMessage(): Promise<SendMessageResult> {
+      throw new Error('spawn codex ENOENT');
+    }
+    async interrupt(): Promise<InterruptResult> {
+      throw new Error('spawn codex ENOENT');
+    }
+  }
+
+  let handlers: ReturnType<typeof createToolHandlers>;
+  let claude: MockClaudeEnabled;
+
+  beforeEach(() => {
+    claude = new MockClaudeEnabled();
+    handlers = createToolHandlers(registry(new MockCodexSpawnError(), claude));
+  });
+
+  it('list_sessions returns codex stub when spawn fails instead of hard error', async () => {
+    const res = await handlers.list_sessions({});
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    
+    // Should have codex stub with helpful message
+    const codexStub = body.sessions.find((s: { id: string }) => s.id === '_codex_stub');
+    expect(codexStub).toBeDefined();
+    expect(codexStub.provider).toBe('codex');
+    expect(codexStub.status).toBe('not_enabled');
+    expect(codexStub.preview).toMatch(/codex binary not found|CODEX_MOCK/i);
+    
+    // Claude should still work
+    const claudeSession = body.sessions.find((s: { provider: string }) => s.provider === 'claude');
+    expect(claudeSession).toBeDefined();
+    expect(claudeSession.id).toBe('claude_test_1');
+  });
+
+  it('list_sessions with provider=codex returns stub for spawn error', async () => {
+    const res = await handlers.list_sessions({ provider: 'codex' });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessions).toHaveLength(1);
+    expect(body.sessions[0].id).toBe('_codex_stub');
+    expect(body.sessions[0].status).toBe('not_enabled');
+  });
+});

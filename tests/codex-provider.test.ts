@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { hostname } from 'node:os';
 
 describe('CodexProvider mock mode - wait/steer/approvals', () => {
   beforeEach(() => {
@@ -7,6 +8,52 @@ describe('CodexProvider mock mode - wait/steer/approvals', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  describe('host fields in session responses', () => {
+    it('listSessions includes hostId and hostName from defaults', async () => {
+      const { CodexProvider } = await import('../src/providers/codex.js');
+      const provider = new CodexProvider();
+      const sessions = await provider.listSessions();
+      
+      expect(sessions.length).toBeGreaterThan(0);
+      expect(sessions[0].hostId).toBe(hostname());
+      expect(sessions[0].hostName).toBe(hostname());
+    });
+
+    it('listSessions uses custom WINGMAN_HOST_ID', async () => {
+      vi.stubEnv('WINGMAN_HOST_ID', 'pearlwolf');
+      const { CodexProvider } = await import('../src/providers/codex.js');
+      const provider = new CodexProvider();
+      const sessions = await provider.listSessions();
+      
+      expect(sessions[0].hostId).toBe('pearlwolf');
+      expect(sessions[0].hostName).toBe('pearlwolf');
+    });
+
+    it('listSessions uses custom WINGMAN_HOST_NAME', async () => {
+      vi.stubEnv('WINGMAN_HOST_ID', 'pearlwolf');
+      vi.stubEnv('WINGMAN_HOST_NAME', 'Pearlwolf Windows');
+      const { CodexProvider } = await import('../src/providers/codex.js');
+      const provider = new CodexProvider();
+      const sessions = await provider.listSessions();
+      
+      expect(sessions[0].hostId).toBe('pearlwolf');
+      expect(sessions[0].hostName).toBe('Pearlwolf Windows');
+    });
+
+    it('getSession includes hostId and hostName', async () => {
+      vi.stubEnv('WINGMAN_HOST_ID', 'macbook');
+      vi.stubEnv('WINGMAN_HOST_NAME', 'MacBook Pro');
+      const { CodexProvider } = await import('../src/providers/codex.js');
+      const provider = new CodexProvider();
+      const sessions = await provider.listSessions();
+      const sessionId = sessions[0].id;
+      
+      const session = await provider.getSession(sessionId);
+      expect(session?.hostId).toBe('macbook');
+      expect(session?.hostName).toBe('MacBook Pro');
+    });
   });
 
   it('listSessions returns mock sessions', async () => {
@@ -325,5 +372,51 @@ describe('CodexProvider mock mode - wait/steer/approvals', () => {
     // Verify session is idle after interrupt
     const session = await provider.getSession(result.sessionId);
     expect(session?.status).toBe('idle');
+  });
+
+  describe('model override in createSession', () => {
+    it('createSession returns model when explicitly provided', async () => {
+      const { CodexProvider } = await import('../src/providers/codex.js');
+      const provider = new CodexProvider();
+      
+      const result = await provider.createSession({ 
+        cwd: '/tmp/test',
+        model: 'gpt-4.1',
+      });
+      
+      expect(result.model).toBe('gpt-4.1');
+    });
+
+    it('createSession returns model from WINGMAN_CODEX_MODEL env', async () => {
+      vi.stubEnv('WINGMAN_CODEX_MODEL', 'gpt-4.5');
+      const { CodexProvider } = await import('../src/providers/codex.js');
+      const provider = new CodexProvider();
+      
+      const result = await provider.createSession({ cwd: '/tmp/test' });
+      
+      expect(result.model).toBe('gpt-4.5');
+    });
+
+    it('explicit model arg takes precedence over env', async () => {
+      vi.stubEnv('WINGMAN_CODEX_MODEL', 'gpt-4.1');
+      const { CodexProvider } = await import('../src/providers/codex.js');
+      const provider = new CodexProvider();
+      
+      const result = await provider.createSession({ 
+        cwd: '/tmp/test',
+        model: 'gpt-4.5',
+      });
+      
+      expect(result.model).toBe('gpt-4.5');
+    });
+
+    it('createSession returns undefined model when no override', async () => {
+      const { CodexProvider } = await import('../src/providers/codex.js');
+      const provider = new CodexProvider();
+      
+      const result = await provider.createSession({ cwd: '/tmp/test' });
+      
+      expect(result.model).toBeUndefined();
+    });
   });
 });

@@ -7,12 +7,25 @@
  * - Port availability
  * - Claude Agent SDK availability (unless CLAUDE_MOCK=1)
  * - Codex binary on PATH (unless CODEX_MOCK=1)
+ * - Codex model compatibility (ChatGPT vs API account)
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { spawn } from 'node:child_process';
-import { configPath, loadConfig, resolvePort } from './config.js';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import {
+  configPath,
+  loadConfig,
+  resolvePort,
+  resolveCodexModel,
+  isCodexModelChatGptIncompatible,
+  CODEX_CHATGPT_SAFE_MODEL,
+  CODEX_CHATGPT_INCOMPATIBLE_MODELS,
+  resolveHostId,
+  resolveHostName,
+} from './config.js';
 
 interface CheckResult {
   name: string;
@@ -66,7 +79,30 @@ export async function checkConfig(): Promise<CheckResult> {
   return {
     name: 'Config file',
     status: 'pass',
-    message: `Config found at ${path}`,
+    message: `Config found at ${path} (use --reuse-token to keep existing token)`,
+  };
+}
+
+/**
+ * Check token security — warn that pair logs print tokens to console.
+ */
+export async function checkTokenSecurity(): Promise<CheckResult> {
+  const config = loadConfig();
+  
+  if (!config?.token) {
+    return {
+      name: 'Token security',
+      status: 'pass',
+      message: 'No token configured yet',
+    };
+  }
+
+  // Warn that tokens are printed to console during pair
+  return {
+    name: 'Token security',
+    status: 'warn',
+    message: 'Pair logs print bearer token to console — avoid screen sharing during pair',
+    fix: 'Use --reuse-token when config exists to avoid regenerating/re-printing token',
   };
 }
 
@@ -182,15 +218,15 @@ export async function checkCodexBinary(): Promise<CheckResult> {
         resolve({
           name: 'Codex binary',
           status: 'warn',
-          message: `Codex binary not found: ${bin}`,
-          fix: 'Install Codex CLI and ensure `codex` is on PATH, or set CODEX_MOCK=1',
+          message: `Codex binary not found: ${bin} (Wingman will run Claude-only; list_sessions degrades gracefully)`,
+          fix: 'Install Codex CLI and ensure `codex` is on PATH, set CODEX_BIN=/path/to/codex, or set CODEX_MOCK=1',
         });
       } else {
         resolve({
           name: 'Codex binary',
-          status: 'fail',
-          message: `Codex error: ${err.message}`,
-          fix: 'Check Codex installation, or set CODEX_MOCK=1',
+          status: 'warn',
+          message: `Codex error: ${err.message} (Wingman will run Claude-only)`,
+          fix: 'Check Codex installation, set CODEX_BIN path, or set CODEX_MOCK=1',
         });
       }
     });
@@ -207,7 +243,7 @@ export async function checkCodexBinary(): Promise<CheckResult> {
         resolve({
           name: 'Codex binary',
           status: 'warn',
-          message: `Codex exited with code ${code}`,
+          message: `Codex exited with code ${code} (Wingman will run Claude-only)`,
           fix: 'Codex may need authentication or setup',
         });
       }
@@ -275,14 +311,119 @@ export async function checkMuseBinary(): Promise<CheckResult> {
   });
 }
 
+/**
+ * Check if the configured Codex model is compatible with ChatGPT accounts.
+ * This helps users who have model = "gpt-6-sol" in their ~/.codex/config.toml
+ * but are using a ChatGPT subscription (not API access).
+ */
+export async function checkCodexModel(): Promise<CheckResult> {
+  if (process.env.CODEX_MOCK === '1' || process.env.CODEX_MOCK === 'true') {
+    return {
+      name: 'Codex model config',
+      status: 'pass',
+      message: 'CODEX_MOCK=1 (model check skipped)',
+    };
+  }
+
+  // Check for WINGMAN_CODEX_MODEL env override first
+  const envModel = resolveCodexModel();
+  if (envModel) {
+    if (isCodexModelChatGptIncompatible(envModel)) {
+      return {
+        name: 'Codex model config',
+        status: 'warn',
+        message: `WINGMAN_CODEX_MODEL="${envModel}" may not work with ChatGPT accounts`,
+        fix: `If using ChatGPT (not API), set WINGMAN_CODEX_MODEL="${CODEX_CHATGPT_SAFE_MODEL}" or another supported model`,
+      };
+    }
+    return {
+      name: 'Codex model config',
+      status: 'pass',
+      message: `WINGMAN_CODEX_MODEL="${envModel}" (override active)`,
+    };
+  }
+
+  // Check ~/.codex/config.toml for model setting
+  const codexConfigPath = join(homedir(), '.codex', 'config.toml');
+  if (!existsSync(codexConfigPath)) {
+    return {
+      name: 'Codex model config',
+      status: 'pass',
+      message: 'No ~/.codex/config.toml found (Codex will use defaults)',
+    };
+  }
+
+  try {
+    const content = readFileSync(codexConfigPath, 'utf8');
+    // Simple TOML parsing for model line - look for model = "..."
+    const modelMatch = content.match(/^\s*model\s*=\s*["']([^"']+)["']/m);
+    if (modelMatch) {
+      const configModel = modelMatch[1];
+      if (isCodexModelChatGptIncompatible(configModel)) {
+        return {
+          name: 'Codex model config',
+          status: 'warn',
+          message: `~/.codex/config.toml has model="${configModel}" (ChatGPT-incompatible)`,
+          fix: `Set WINGMAN_CODEX_MODEL="${CODEX_CHATGPT_SAFE_MODEL}" to override, or edit ~/.codex/config.toml. ` +
+            `Models requiring API access: ${CODEX_CHATGPT_INCOMPATIBLE_MODELS.join(', ')}`,
+        };
+      }
+      return {
+        name: 'Codex model config',
+        status: 'pass',
+        message: `~/.codex/config.toml has model="${configModel}" (compatible)`,
+      };
+    }
+    return {
+      name: 'Codex model config',
+      status: 'pass',
+      message: 'No explicit model in ~/.codex/config.toml (Codex will use defaults)',
+    };
+  } catch {
+    return {
+      name: 'Codex model config',
+      status: 'pass',
+      message: 'Could not read ~/.codex/config.toml (Codex will use defaults)',
+    };
+  }
+}
+
+/**
+ * Check host identity configuration for multi-host setups.
+ */
+export async function checkHostIdentity(): Promise<CheckResult> {
+  const hostId = resolveHostId();
+  const hostName = resolveHostName();
+  
+  const hasEnvId = !!process.env.WINGMAN_HOST_ID?.trim();
+  const hasEnvName = !!process.env.WINGMAN_HOST_NAME?.trim();
+  
+  if (hasEnvId || hasEnvName) {
+    return {
+      name: 'Host identity',
+      status: 'pass',
+      message: `hostId="${hostId}", hostName="${hostName}" (from env)`,
+    };
+  }
+  
+  return {
+    name: 'Host identity',
+    status: 'pass',
+    message: `hostId="${hostId}", hostName="${hostName}" (from hostname — set WINGMAN_HOST_ID/NAME for multi-host)`,
+  };
+}
+
 export async function runAllChecks(): Promise<CheckResult[]> {
   const checks = await Promise.all([
     checkNodeVersion(),
     checkConfig(),
+    checkTokenSecurity(),
     checkPort(),
     checkClaudeSdk(),
     checkCodexBinary(),
     checkMuseBinary(),
+    checkCodexModel(),
+    checkHostIdentity(),
   ]);
 
   return checks;
@@ -302,9 +443,9 @@ function printResults(results: CheckResult[]): void {
     reset: '\x1b[0m',
   };
 
-  console.log('\n╔══════════════════════════════════════════════════════════════════╗');
-  console.log('║                       Wingman Doctor                             ║');
-  console.log('╚══════════════════════════════════════════════════════════════════╝\n');
+  console.log('\n╔══════════════════════════════════════════════════════════════════════╗');
+  console.log('║                         Wingman Doctor                               ║');
+  console.log('╚══════════════════════════════════════════════════════════════════════╝\n');
 
   let hasIssues = false;
   const fixes: string[] = [];

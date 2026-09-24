@@ -38,6 +38,8 @@ import type {
 import {
   resolveClaudeSendTimeoutMs,
   resolveWaitTurnTimeoutMs,
+  resolveHostId,
+  resolveHostName,
 } from '../config.js';
 
 interface WingmanClaudeSession {
@@ -229,6 +231,9 @@ export class ClaudeProvider implements SessionProvider {
   }
 
   async listSessions(): Promise<SessionSummary[]> {
+    const hostId = resolveHostId();
+    const hostName = resolveHostName();
+    
     if (useMock()) {
       const wingmanSessions: SessionSummary[] = [...this.mockSessions.values()].map((s) => ({
         id: s.id,
@@ -241,6 +246,8 @@ export class ClaudeProvider implements SessionProvider {
         updatedAt: s.updatedAt,
         source: 'wingman' as const,
         tags: s.tags,
+        hostId,
+        hostName,
       }));
 
       if (!discoveryEnabled()) {
@@ -260,6 +267,8 @@ export class ClaudeProvider implements SessionProvider {
         gitBranch: s.gitBranch,
         tag: s.tag,
         tags: s.tags ?? (s.tag ? [s.tag] : undefined),
+        hostId,
+        hostName,
       }));
 
       const wingmanIds = new Set(wingmanSessions.map((s) => s.id));
@@ -286,6 +295,8 @@ export class ClaudeProvider implements SessionProvider {
       updatedAt: reg.updatedAt,
       source: 'wingman' as const,
       tags: reg.tags,
+      hostId,
+      hostName,
     }));
 
     if (!discoveryEnabled()) {
@@ -298,7 +309,7 @@ export class ClaudeProvider implements SessionProvider {
     const merged = [...wingmanSessions];
     for (const ds of discovered) {
       if (!wingmanIds.has(ds.id)) {
-        merged.push(ds);
+        merged.push({ ...ds, hostId, hostName });
       }
     }
 
@@ -312,11 +323,16 @@ export class ClaudeProvider implements SessionProvider {
     if (!session) return null;
 
     const activeTurn = this.activeTurns.get(sessionId);
+    const hostId = resolveHostId();
+    const hostName = resolveHostName();
+    
     return {
       ...session,
       status: activeTurn ? 'running' : 'idle',
       activeTurnId: activeTurn?.turnId,
       activeTurnStartedAt: activeTurn?.startedAt,
+      hostId,
+      hostName,
     };
   }
 

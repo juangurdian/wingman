@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { hostname } from 'node:os';
 
 describe('ClaudeProvider mock mode', () => {
   beforeEach(() => {
@@ -7,6 +8,42 @@ describe('ClaudeProvider mock mode', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  describe('host fields in session responses', () => {
+    it('listSessions includes hostId and hostName from defaults', async () => {
+      const { ClaudeProvider } = await import('../src/providers/claude.js');
+      const provider = new ClaudeProvider();
+      const sessions = await provider.listSessions();
+      
+      expect(sessions.length).toBeGreaterThan(0);
+      expect(sessions[0].hostId).toBe(hostname());
+      expect(sessions[0].hostName).toBe(hostname());
+    });
+
+    it('listSessions uses custom WINGMAN_HOST_ID/NAME', async () => {
+      vi.stubEnv('WINGMAN_HOST_ID', 'macbook');
+      vi.stubEnv('WINGMAN_HOST_NAME', 'MacBook Pro');
+      const { ClaudeProvider } = await import('../src/providers/claude.js');
+      const provider = new ClaudeProvider();
+      const sessions = await provider.listSessions();
+      
+      expect(sessions[0].hostId).toBe('macbook');
+      expect(sessions[0].hostName).toBe('MacBook Pro');
+    });
+
+    it('getSession includes hostId and hostName', async () => {
+      vi.stubEnv('WINGMAN_HOST_ID', 'macbook');
+      vi.stubEnv('WINGMAN_HOST_NAME', 'MacBook Pro');
+      const { ClaudeProvider } = await import('../src/providers/claude.js');
+      const provider = new ClaudeProvider();
+      const sessions = await provider.listSessions();
+      const sessionId = sessions[0].id;
+      
+      const session = await provider.getSession(sessionId);
+      expect(session?.hostId).toBe('macbook');
+      expect(session?.hostName).toBe('MacBook Pro');
+    });
   });
 
   it('listSessions returns mock sessions', async () => {
