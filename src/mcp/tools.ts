@@ -117,18 +117,32 @@ export function createToolHandlers(providers: ProviderRegistry) {
             const list = await providers.get(name).listSessions();
             sessions.push(...list);
           } catch (err) {
-            if (name === 'claude') {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            const isSpawnError = errMsg.includes('ENOENT') || errMsg.includes('spawn') || errMsg.includes('not found');
+            
+            if (name === 'codex') {
+              // Gracefully degrade when Codex binary not found (Windows PATH issue, etc.)
+              // Instead of hard-failing, return a stub so Claude-only mode works
+              sessions.push({
+                id: '_codex_stub',
+                provider: 'codex' as const,
+                preview: isSpawnError 
+                  ? 'Codex binary not found — install Codex or set CODEX_MOCK=1' 
+                  : errMsg,
+                status: 'not_enabled',
+              });
+            } else if (name === 'claude') {
               sessions.push({
                 id: '_claude_stub',
                 provider: 'claude' as const,
-                preview: err instanceof Error ? err.message : String(err),
+                preview: errMsg,
                 status: 'not_enabled',
               });
             } else if (name === 'muse') {
               sessions.push({
                 id: '_muse_stub',
                 provider: 'muse' as const,
-                preview: err instanceof Error ? err.message : String(err),
+                preview: errMsg,
                 status: 'not_enabled',
               });
             } else {

@@ -77,6 +77,12 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | Session export | ✅ Shipped — `export_transcript` tool exports as Markdown/JSON to `~/.wingman/exports/` |
 | Web dashboard | Local-only status page for paired sessions |
 | Plugin architecture | Provider plugins beyond Codex/Claude |
+| Durable tunnels | Tailscale daemon over trycloudflare ephemeral — more reliable for long sessions |
+| wait_turn post-completion | Return `completed + snippet` instead of bare `idle` when turn finishes between polls |
+| Surface systemError | Expose `systemError` field in `get_session` / `wait_turn` for better error visibility |
+| Absorb thread/list lag | Handle delay after `create_session` before thread appears in `thread/list` |
+| Pair supervisor | Crash recovery without token rotation; prefer `--reuse-token` when config exists |
+| Cross-host interrupt guard | Prevent accidental cross-host interrupt by default in multi-host setups |
 
 ### Muse Provider Roadmap
 

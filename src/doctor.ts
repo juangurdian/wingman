@@ -79,7 +79,30 @@ export async function checkConfig(): Promise<CheckResult> {
   return {
     name: 'Config file',
     status: 'pass',
-    message: `Config found at ${path}`,
+    message: `Config found at ${path} (use --reuse-token to keep existing token)`,
+  };
+}
+
+/**
+ * Check token security — warn that pair logs print tokens to console.
+ */
+export async function checkTokenSecurity(): Promise<CheckResult> {
+  const config = loadConfig();
+  
+  if (!config?.token) {
+    return {
+      name: 'Token security',
+      status: 'pass',
+      message: 'No token configured yet',
+    };
+  }
+
+  // Warn that tokens are printed to console during pair
+  return {
+    name: 'Token security',
+    status: 'warn',
+    message: 'Pair logs print bearer token to console — avoid screen sharing during pair',
+    fix: 'Use --reuse-token when config exists to avoid regenerating/re-printing token',
   };
 }
 
@@ -195,15 +218,15 @@ export async function checkCodexBinary(): Promise<CheckResult> {
         resolve({
           name: 'Codex binary',
           status: 'warn',
-          message: `Codex binary not found: ${bin}`,
-          fix: 'Install Codex CLI and ensure `codex` is on PATH, or set CODEX_MOCK=1',
+          message: `Codex binary not found: ${bin} (Wingman will run Claude-only; list_sessions degrades gracefully)`,
+          fix: 'Install Codex CLI and ensure `codex` is on PATH, set CODEX_BIN=/path/to/codex, or set CODEX_MOCK=1',
         });
       } else {
         resolve({
           name: 'Codex binary',
-          status: 'fail',
-          message: `Codex error: ${err.message}`,
-          fix: 'Check Codex installation, or set CODEX_MOCK=1',
+          status: 'warn',
+          message: `Codex error: ${err.message} (Wingman will run Claude-only)`,
+          fix: 'Check Codex installation, set CODEX_BIN path, or set CODEX_MOCK=1',
         });
       }
     });
@@ -220,7 +243,7 @@ export async function checkCodexBinary(): Promise<CheckResult> {
         resolve({
           name: 'Codex binary',
           status: 'warn',
-          message: `Codex exited with code ${code}`,
+          message: `Codex exited with code ${code} (Wingman will run Claude-only)`,
           fix: 'Codex may need authentication or setup',
         });
       }
@@ -394,6 +417,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   const checks = await Promise.all([
     checkNodeVersion(),
     checkConfig(),
+    checkTokenSecurity(),
     checkPort(),
     checkClaudeSdk(),
     checkCodexBinary(),
