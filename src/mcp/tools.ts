@@ -171,19 +171,25 @@ export function createToolHandlers(providers: ProviderRegistry) {
           }
         }
         
-        // Sort all sessions with live first when state is 'all' or unset
-        if (stateFilter === 'all') {
-          sessions.sort((a, b) => {
-            const aLive = (a as { live?: boolean }).live ?? false;
-            const bLive = (b as { live?: boolean }).live ?? false;
-            if (aLive && !bLive) return -1;
-            if (!aLive && bLive) return 1;
-            return ((b as { updatedAt?: number }).updatedAt ?? 0) - 
-                   ((a as { updatedAt?: number }).updatedAt ?? 0);
-          });
+        // Apply state filter at the end, after all sources are merged
+        let filteredSessions = sessions;
+        if (stateFilter === 'live') {
+          filteredSessions = sessions.filter((s) => (s as { live?: boolean }).live === true);
+        } else if (stateFilter === 'past') {
+          filteredSessions = sessions.filter((s) => (s as { live?: boolean }).live !== true);
         }
         
-        return textResult({ sessions });
+        // Sort: live sessions first, then by updatedAt descending
+        filteredSessions.sort((a, b) => {
+          const aLive = (a as { live?: boolean }).live ?? false;
+          const bLive = (b as { live?: boolean }).live ?? false;
+          if (aLive && !bLive) return -1;
+          if (!aLive && bLive) return 1;
+          return ((b as { updatedAt?: number }).updatedAt ?? 0) - 
+                 ((a as { updatedAt?: number }).updatedAt ?? 0);
+        });
+        
+        return textResult({ sessions: filteredSessions });
       } catch (err) {
         return errorResult(err);
       }

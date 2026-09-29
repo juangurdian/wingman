@@ -989,3 +989,115 @@ describe('Claude Inbox - sendToClaudeSession with past sessions', () => {
     setMockLiveSessions([]);
   });
 });
+
+describe('Claude Inbox - background jobs without registry', () => {
+  beforeEach(() => {
+    vi.stubEnv('CLAUDE_INBOX_MOCK', '1');
+  });
+  
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('blocked background job without registry entry is NOT live', async () => {
+    const { setMockLiveSessions, resolveSessionTarget } = await import('../src/claude-inbox.js');
+    
+    // Simulate a scenario like on Pearlwolf:
+    // - One live "Reddit agent" session with pid 44184 (has registry entry)
+    // - One blocked background job "Reddit agent" with no pid (only in jobs dir, not registry)
+    setMockLiveSessions([
+      {
+        sessionId: 'ef914190-live',
+        name: 'Reddit agent',
+        pid: 44184,
+        live: true, // Has registry entry with running pid
+        status: 'idle',
+        messagingSocketPath: '/tmp/cc-socks/44184.sock',
+        socketExists: true,
+        source: 'both',
+      },
+      {
+        sessionId: 'e0695933-blocked-bg',
+        name: 'Reddit agent',
+        // No pid - this is a blocked background job from jobs dir
+        live: false, // No registry entry = NOT live
+        state: 'blocked',
+        kind: 'background',
+        source: 'agents', // Came from `claude agents` but has no registry
+      },
+    ]);
+    
+    // Resolving "Reddit agent" should find the LIVE one, not the blocked one
+    const result = await resolveSessionTarget('Reddit agent');
+    
+    expect(result.session).not.toBeNull();
+    expect(result.session!.sessionId).toBe('ef914190-live');
+    expect(result.session!.live).toBe(true);
+    expect(result.resolvedToPast).toBeFalsy();
+    
+    setMockLiveSessions([]);
+  });
+
+  it('session from claude agents without registry entry is past', async () => {
+    const { setMockLiveSessions, resolveSessionTarget } = await import('../src/claude-inbox.js');
+    
+    // Session appears in `claude agents` but has no registry entry
+    // This happens with stopped/blocked background jobs
+    setMockLiveSessions([
+      {
+        sessionId: 'blocked_job',
+        name: 'Blocked Job',
+        live: false, // No registry = not live
+        state: 'blocked',
+        kind: 'background',
+        source: 'agents',
+      },
+    ]);
+    
+    const result = await resolveSessionTarget('Blocked Job');
+    
+    expect(result.session).not.toBeNull();
+    expect(result.session!.live).toBe(false);
+    expect(result.resolvedToPast).toBe(true);
+    
+    setMockLiveSessions([]);
+  });
+
+  it('name resolution prefers live over blocked bg job with same name', async () => {
+    const { sendToClaudeSession, setMockLiveSessions } = await import('../src/claude-inbox.js');
+    
+    setMockLiveSessions([
+      {
+        sessionId: 'live_reddit',
+        name: 'Reddit agent',
+        pid: 44184,
+        live: true,
+        messagingSocketPath: '/tmp/live.sock',
+        socketExists: true,
+        source: 'both',
+      },
+      {
+        sessionId: 'blocked_reddit',
+        name: 'Reddit agent',
+        live: false, // Blocked bg job is NOT live
+        state: 'blocked',
+        source: 'agents',
+      },
+      {
+        sessionId: 'old_reddit',
+        name: 'Reddit agent from AppDashboard',
+        live: false, // Old transcript
+        source: 'discovered',
+      },
+    ]);
+    
+    // Should resolve to the live one, no ambiguity error
+    const result = await sendToClaudeSession('Reddit', 'Hello');
+    
+    expect(result.delivered).toBe(true);
+    expect(result.sessionId).toBe('live_reddit');
+    expect(result.live).toBe(true);
+    
+    setMockLiveSessions([]);
+  });
+});

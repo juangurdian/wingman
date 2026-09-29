@@ -440,8 +440,13 @@ export function runClaudeAgents(): ClaudeAgentsEntry[] {
 
 /**
  * List all Claude Code sessions with liveness and inbox socket status.
- * Live sessions have a running pid (checked cross-platform).
- * Past sessions have stale registry files with dead pids.
+ * 
+ * A session is LIVE only when it has a registry entry (~/.claude/sessions/<pid>.json)
+ * with a running pid. Sessions from `claude agents` that don't have a registry entry
+ * (e.g., blocked background jobs) are PAST, not live.
+ * 
+ * Past sessions have stale registry files with dead pids, or exist only as
+ * jobs/transcripts without a running process.
  */
 export async function listClaudeLiveSessions(): Promise<ClaudeLiveSession[]> {
   if (useMock()) {
@@ -450,64 +455,72 @@ export async function listClaudeLiveSessions(): Promise<ClaudeLiveSession[]> {
 
   const sessions = new Map<string, ClaudeLiveSession>();
 
-  // 1. Get sessions from `claude agents --json`
+  // 1. Scan registry files first to get authoritative liveness info
+  // A session is live ONLY if its registry entry has a running pid
+  const registry = scanRegistryFilesWithLiveness();
+  const liveBySessionId = new Map<string, ClaudeRegistryWithLiveness>();
+  const liveByPid = new Map<number, ClaudeRegistryWithLiveness>();
+  
+  for (const [key, entry] of registry) {
+    if (entry.sessionId) liveBySessionId.set(entry.sessionId, entry);
+    if (entry.pid) liveByPid.set(entry.pid, entry);
+    
+    // Add registry entries as sessions
+    sessions.set(key, {
+      sessionId: entry.sessionId ?? key,
+      pid: entry.pid,
+      name: entry.name,
+      status: entry.status,
+      messagingSocketPath: entry.messagingSocketPath,
+      kind: entry.kind,
+      entrypoint: entry.entrypoint,
+      cwd: entry.cwd,
+      version: entry.version,
+      pidDomain: entry.pidDomain,
+      updatedAt: entry.updatedAt,
+      source: 'registry',
+      live: entry.pidRunning, // Live ONLY if pid is running
+    });
+  }
+
+  // 2. Get sessions from `claude agents --json` and merge
+  // Note: `claude agents` lists both running sessions AND blocked/stopped background jobs
+  // We do NOT assume these are live - liveness is determined by registry pid check
   const agents = runClaudeAgents();
   for (const agent of agents) {
     const key = agent.sessionId ?? agent.id ?? agent.pid?.toString();
     if (!key) continue;
 
-    // Sessions from `claude agents` are always live (it only shows running sessions)
-    sessions.set(key, {
-      sessionId: key,
-      pid: agent.pid,
-      name: agent.name,
-      status: agent.status,
-      state: agent.state,
-      waitingFor: agent.waitingFor,
-      agentId: agent.id,
-      source: 'agents',
-      live: true, // `claude agents` only shows running sessions
-    });
-  }
-
-  // 2. Merge with registry files (with liveness check)
-  const registry = scanRegistryFilesWithLiveness();
-  for (const [key, entry] of registry) {
+    // Check if this session has a registry entry with running pid
+    const registryEntry = liveBySessionId.get(key) ?? 
+      (agent.pid ? liveByPid.get(agent.pid) : undefined);
+    const isLive = registryEntry?.pidRunning ?? false;
+    
     const existing = sessions.get(key) ??
-      (entry.pid ? sessions.get(entry.pid.toString()) : undefined) ??
-      (entry.sessionId ? sessions.get(entry.sessionId) : undefined);
+      (agent.pid ? sessions.get(agent.pid.toString()) : undefined);
 
     if (existing) {
-      // Merge registry info into existing session
-      existing.messagingSocketPath = entry.messagingSocketPath;
-      existing.kind = entry.kind;
-      existing.entrypoint = entry.entrypoint;
-      existing.cwd = entry.cwd;
-      existing.version = entry.version;
-      existing.pidDomain = entry.pidDomain;
-      existing.updatedAt = entry.updatedAt;
+      // Merge agents info into existing session from registry
+      if (!existing.name && agent.name) existing.name = agent.name;
+      if (!existing.status && agent.status) existing.status = agent.status;
+      if (!existing.state && agent.state) existing.state = agent.state;
+      existing.waitingFor = agent.waitingFor;
+      existing.agentId = agent.id;
       existing.source = 'both';
-      if (!existing.name && entry.name) existing.name = entry.name;
-      if (!existing.pid && entry.pid) existing.pid = entry.pid;
-      if (!existing.status && entry.status) existing.status = entry.status;
-      // Keep live=true if already set from agents, otherwise use registry check
-      if (!existing.live) existing.live = entry.pidRunning;
+      // Do NOT override live - registry's pidRunning is authoritative
     } else {
-      // New session from registry only - liveness determined by pid check
+      // Session from agents only, no registry entry = NOT live
+      // This happens for blocked/stopped background jobs
       sessions.set(key, {
-        sessionId: entry.sessionId ?? key,
-        pid: entry.pid,
-        name: entry.name,
-        status: entry.status,
-        messagingSocketPath: entry.messagingSocketPath,
-        kind: entry.kind,
-        entrypoint: entry.entrypoint,
-        cwd: entry.cwd,
-        version: entry.version,
-        pidDomain: entry.pidDomain,
-        updatedAt: entry.updatedAt,
-        source: 'registry',
-        live: entry.pidRunning,
+        sessionId: key,
+        pid: agent.pid,
+        name: agent.name,
+        status: agent.status,
+        state: agent.state,
+        waitingFor: agent.waitingFor,
+        agentId: agent.id,
+        source: 'agents',
+        live: isLive, // false unless we found a registry entry with running pid
       });
     }
   }
