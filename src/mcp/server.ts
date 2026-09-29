@@ -20,10 +20,8 @@ import {
   SteerSchema,
   ListApprovalsSchema,
   ResolveApprovalSchema,
-  ApprovalDecisionSchema,
   SetSessionMetaSchema,
   ExportTranscriptSchema,
-  ExportFormatSchema,
   ListClaudeLiveSessionsSchema,
   SendToClaudeSessionSchema,
 } from './tools.js';
@@ -93,14 +91,17 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       version: '0.1.0',
     });
 
+    // Use .shape from zod schemas to ensure registered inputSchema matches handler schema
+    // This prevents drift where the MCP SDK strips params not in the registered schema
+    
     server.registerTool(
       'list_sessions',
       {
         description:
-          'List coding-agent sessions. Optional provider filter: codex | claude.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']).optional(),
-        },
+          'List coding-agent sessions. Optional provider filter: codex | claude | muse. ' +
+          'Optional state filter: live (only active sessions with running pid), past (only past/resumable), ' +
+          'or all (default, live sessions sorted first).',
+        inputSchema: ListSessionsSchema.shape,
       },
       async (args) => handlers.list_sessions(ListSessionsSchema.parse(args)),
     );
@@ -109,11 +110,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'read_transcript',
       {
         description: 'Read recent transcript messages for a session.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-          limit: z.number().int().positive().max(500).optional(),
-        },
+        inputSchema: ReadTranscriptSchema.shape,
       },
       async (args) => handlers.read_transcript(ReadTranscriptSchema.parse(args)),
     );
@@ -121,12 +118,11 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
     server.registerTool(
       'send_message',
       {
-        description: 'Send a user message into an existing session (starts a turn for Codex).',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-          text: z.string(),
-        },
+        description:
+          'Send a user message into an existing session. For live Claude sessions, uses inbox ' +
+          'injection (appears in existing terminal without forking). For past Claude sessions, ' +
+          'uses SDK resume (may fork if session is also open interactively).',
+        inputSchema: SendMessageSchema.shape,
       },
       async (args) => handlers.send_message(SendMessageSchema.parse(args)),
     );
@@ -135,10 +131,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'interrupt',
       {
         description: 'Interrupt an in-flight turn/session.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-        },
+        inputSchema: InterruptSchema.shape,
       },
       async (args) => handlers.interrupt(InterruptSchema.parse(args)),
     );
@@ -147,15 +140,9 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'create_session',
       {
         description:
-          'Create a new session (Codex: thread/start). Optional cwd, initial prompt, name, tags, and model override (Codex only).',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          cwd: z.string().optional(),
-          prompt: z.string().optional(),
-          name: z.string().optional(),
-          tags: z.array(z.string()).optional(),
-          model: z.string().optional().describe('Model override for Codex sessions. Optional; defaults to Codex config/defaults. Ignored for other providers.'),
-        },
+          'Create a new session (Codex: thread/start). Optional cwd, initial prompt, name, tags, ' +
+          'and model override (Codex only).',
+        inputSchema: CreateSessionSchema.shape,
       },
       async (args) => handlers.create_session(CreateSessionSchema.parse(args)),
     );
@@ -165,10 +152,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       {
         description:
           'Get detailed session info including status (idle/running), active turn ID, and timestamps.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-        },
+        inputSchema: GetSessionSchema.shape,
       },
       async (args) => handlers.get_session(GetSessionSchema.parse(args)),
     );
@@ -177,14 +161,9 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'wait_turn',
       {
         description:
-          'Wait for an active Codex turn to complete, fail, be interrupted, or timeout. ' +
+          'Wait for an active turn to complete, fail, be interrupted, or timeout. ' +
           'Returns status and latest message snippet. Use instead of polling read_transcript.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-          timeout_ms: z.number().int().positive().max(300_000).optional(),
-          poll_interval_ms: z.number().int().positive().max(10_000).optional(),
-        },
+        inputSchema: WaitTurnSchema.shape,
       },
       async (args) => handlers.wait_turn(WaitTurnSchema.parse(args)),
     );
@@ -195,11 +174,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
         description:
           'Add guidance to an in-flight Codex turn without starting a new turn. ' +
           'Use this to provide mid-turn input like follow-up instructions or clarifications.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-          text: z.string(),
-        },
+        inputSchema: SteerSchema.shape,
       },
       async (args) => handlers.steer(SteerSchema.parse(args)),
     );
@@ -210,10 +185,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
         description:
           'List pending approval requests for a Codex session. ' +
           'Approvals are required for sandbox commands, file changes, or network access.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-        },
+        inputSchema: ListApprovalsSchema.shape,
       },
       async (args) => handlers.list_approvals(ListApprovalsSchema.parse(args)),
     );
@@ -223,12 +195,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       {
         description:
           'Resolve a pending Codex approval request. Decisions: accept, acceptForSession, decline, cancel.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-          approval_id: z.string(),
-          decision: ApprovalDecisionSchema,
-        },
+        inputSchema: ResolveApprovalSchema.shape,
       },
       async (args) => handlers.resolve_approval(ResolveApprovalSchema.parse(args)),
     );
@@ -238,12 +205,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       {
         description:
           'Set session metadata (name, tags) for easier discovery. Works for Wingman-owned sessions.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-          name: z.string().optional(),
-          tags: z.array(z.string()).optional(),
-        },
+        inputSchema: SetSessionMetaSchema.shape,
       },
       async (args) => handlers.set_session_meta(SetSessionMetaSchema.parse(args)),
     );
@@ -253,12 +215,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       {
         description:
           'Export a session transcript as Markdown or JSON. Returns content inline and writes to ~/.wingman/exports/.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-          format: ExportFormatSchema,
-          limit: z.number().int().positive().max(500).optional(),
-        },
+        inputSchema: ExportTranscriptSchema.shape,
       },
       async (args) => handlers.export_transcript(ExportTranscriptSchema.parse(args)),
     );
@@ -270,7 +227,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
           'List running interactive Claude Code sessions with their inbox socket status. ' +
           'Returns sessionId, name, pid, status, whether an inbox socket was found, and permission mode. ' +
           'Use to discover targets for send_to_claude_session.',
-        inputSchema: {},
+        inputSchema: ListClaudeLiveSessionsSchema.shape,
       },
       async (args) => handlers.list_claude_live_sessions(ListClaudeLiveSessionsSchema.parse(args)),
     );
@@ -284,10 +241,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
           'Target can be sessionId, name (must be unambiguous), or pid. ' +
           'Idle sessions start a new turn; mid-turn messages are read between tool calls. ' +
           'Sessions in bypass-permissions mode may hold the message behind an approval dialog.',
-        inputSchema: {
-          target: z.string().describe('Session target: sessionId, name, or pid'),
-          text: z.string().describe('Message text to send'),
-        },
+        inputSchema: SendToClaudeSessionSchema.shape,
       },
       async (args) => handlers.send_to_claude_session(SendToClaudeSessionSchema.parse(args)),
     );
