@@ -37,7 +37,7 @@
  * Cost note: Each injected message is a full turn on that session's context.
  */
 
-import { spawnSync, execSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join, basename } from 'node:path';
@@ -45,29 +45,12 @@ import { createConnection, type Socket } from 'node:net';
 
 /**
  * Check if a process with the given PID is currently running.
- * Cross-platform: uses process.kill(pid, 0) on POSIX, tasklist on Windows.
+ * Cross-platform: uses process.kill(pid, 0) which works on POSIX and Windows.
  * Handles EPERM as alive (process exists but we don't have permission to signal it).
  */
 export function isPidRunning(pid: number): boolean {
-  if (!pid || pid <= 0) return false;
+  if (!pid || pid <= 0 || !Number.isFinite(pid)) return false;
 
-  if (platform() === 'win32') {
-    try {
-      // On Windows, use tasklist to check if pid exists
-      const result = execSync(`tasklist /FI "PID eq ${pid}" /NH`, {
-        encoding: 'utf8',
-        timeout: 5000,
-        windowsHide: true,
-      });
-      // tasklist returns "INFO: No tasks are running..." if pid doesn't exist
-      // Otherwise it returns a line with the process info
-      return !result.includes('No tasks') && result.includes(String(pid));
-    } catch {
-      return false;
-    }
-  }
-
-  // POSIX: use process.kill(pid, 0) which checks if process exists without sending a signal
   try {
     process.kill(pid, 0);
     return true;
@@ -75,7 +58,7 @@ export function isPidRunning(pid: number): boolean {
     const code = (err as NodeJS.ErrnoException).code;
     // EPERM means process exists but we don't have permission to signal it
     if (code === 'EPERM') return true;
-    // ESRCH means no such process
+    // ESRCH or anything else means no such process
     return false;
   }
 }

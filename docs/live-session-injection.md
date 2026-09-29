@@ -413,7 +413,7 @@ send_message provider="claude" session_id="..." text="..."
 send_to_claude_session target="session_name_or_id" text="Your message"
 ```
 
-**Session Liveness**: A Claude session is "live" when its pid is running (cross-platform check via `process.kill(pid, 0)` on POSIX, `tasklist` on Windows). Live sessions can receive messages via inbox injection without forking. Past sessions have stale registry files with dead pids and must be resumed via SDK (which may fork if the session is also open interactively elsewhere).
+**Session Liveness**: A Claude session is "live" when its pid is running (cross-platform check via `process.kill(pid, 0)`, which works on POSIX and Windows). Live sessions can receive messages via inbox injection without forking. Past sessions have stale registry files with dead pids and must be resumed via SDK (which may fork if the session is also open interactively elsewhere).
 
 **Name Resolution**: When targeting a session by name, Wingman prefers live matches:
 - If exactly one live session matches the name, use it (even if past sessions share the name)
