@@ -167,6 +167,36 @@ export function isCodexModelApiOnly(model: string): boolean {
   );
 }
 
+// Codex socket configuration (shared server mode)
+
+/**
+ * Resolve the Codex app-server socket path.
+ * When set, Wingman connects to an existing app-server instead of spawning its own.
+ * 
+ * Priority: WINGMAN_CODEX_SOCKET env > undefined (spawn mode)
+ */
+export function resolveCodexSocket(): string | undefined {
+  const env = process.env.WINGMAN_CODEX_SOCKET?.trim();
+  if (env) return env;
+  return undefined;
+}
+
+/**
+ * Default socket path for the Codex app-server control socket.
+ * This is where the ChatGPT desktop app and `codex app-server daemon` listen.
+ */
+export function defaultCodexSocketPath(): string {
+  const codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), '.codex');
+  return join(codexHome, 'app-server-control', 'app-server-control.sock');
+}
+
+/**
+ * Check if we should use attach mode (connect to existing app-server).
+ */
+export function useCodexAttachMode(): boolean {
+  return !!resolveCodexSocket();
+}
+
 // Host identity configuration
 
 /**

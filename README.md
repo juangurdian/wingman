@@ -1,6 +1,8 @@
 # Wingman
 
-**Your coding agent's wingman** — a TypeScript MCP bridge + pair CLI so Grok Bot, Cursor, Muse Code (and other MCP hosts) can talk to live Codex and Claude Code sessions on your machine while you still see the session.
+**Your AI supervisor's bridge to local coding agents** - a TypeScript MCP server that lets Grok Bot (and other MCP hosts) act as a supervisor/manager over Codex and Claude Code sessions running on your machine.
+
+The supervisor can list workers, read their progress, assign tasks, handle escalations, and coordinate multi-worker efforts - while you still see sessions locally.
 
 Dual-provider: Codex (app-server) + Claude Code (Agent SDK).
 
@@ -16,9 +18,14 @@ See **[ROADMAP.md](ROADMAP.md)** for positioning, backlog, and non-goals.
 
 ## Why Wingman?
 
-Cloud assistants are great copilots — until they need to *touch* the session you're already in. Wingman sits on your machine, pairs with a one-command CLI, and exposes a small MCP surface so a remote host can list threads, read transcripts, send messages, and interrupt turns — without hijacking your TTY or pretending to be the agent UI.
+Cloud AI assistants like Grok Bot are powerful supervisors, but they cannot directly reach coding agents running on your local machine. Wingman bridges this gap, letting a remote supervisor:
 
-Think of it as a radio link between the bot in the cloud and the agent on your desk. You're still flying; Wingman just rides shotgun.
+- **Monitor workers**: List all active sessions, check their status, read transcripts
+- **Assign tasks**: Create sessions with goals, working directories, and initial prompts
+- **Coordinate work**: Wait for turns to complete, handle approvals, steer in-flight work
+- **Stay safe**: Read-only access to sessions owned by other apps (like ChatGPT desktop)
+
+Think of it as the management layer between the supervisor in the cloud and the workers on your desk. You still see everything locally; Wingman provides the coordination.
 
 ## Quickstart
 
@@ -92,11 +99,18 @@ Different MCP hosts have different configuration methods. See the detailed guide
 
 ### Real provider modes
 
-**Codex** — Requires `codex` on `PATH`. Wingman speaks **Codex app-server** JSON-RPC (`codex app-server` over stdio).
+**Codex** - Requires `codex` on `PATH`. Wingman speaks **Codex app-server** JSON-RPC.
 
 ```bash
 npm run pair   # unset CODEX_MOCK
 ```
+
+**Shared server mode** (attach to existing app-server):
+```bash
+export WINGMAN_CODEX_SOCKET="$HOME/.codex/app-server-control/app-server-control.sock"
+npm run pair
+```
+This connects to the same app-server the ChatGPT desktop app uses, so messages appear live in both interfaces. See [docs/codex-shared-server.md](docs/codex-shared-server.md) for details.
 
 **Claude Code** — Uses the `@anthropic-ai/claude-agent-sdk`. Sessions are created and resumed through the SDK.
 

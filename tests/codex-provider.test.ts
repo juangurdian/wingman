@@ -1,6 +1,50 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { hostname } from 'node:os';
 
+describe('CodexProvider connection modes', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+  
+  it('defaults to spawn mode when WINGMAN_CODEX_SOCKET is not set', async () => {
+    vi.stubEnv('CODEX_MOCK', '1');
+    const { CodexProvider } = await import('../src/providers/codex.js');
+    const provider = new CodexProvider();
+    
+    expect(provider.getConnectionMode()).toBe('spawn');
+  });
+  
+  it('uses attach mode when WINGMAN_CODEX_SOCKET is set', async () => {
+    vi.stubEnv('CODEX_MOCK', '1');
+    vi.stubEnv('WINGMAN_CODEX_SOCKET', '/tmp/test.sock');
+    
+    // Need to re-import to pick up new env
+    vi.resetModules();
+    const { CodexProvider } = await import('../src/providers/codex.js');
+    const provider = new CodexProvider();
+    
+    expect(provider.getConnectionMode()).toBe('attach');
+  });
+  
+  it('isThreadOwned returns false for unknown threads', async () => {
+    vi.stubEnv('CODEX_MOCK', '1');
+    const { CodexProvider } = await import('../src/providers/codex.js');
+    const provider = new CodexProvider();
+    
+    expect(provider.isThreadOwned('unknown-thread-id')).toBe(false);
+  });
+  
+  it('isThreadOwned returns true after createSession', async () => {
+    vi.stubEnv('CODEX_MOCK', '1');
+    const { CodexProvider } = await import('../src/providers/codex.js');
+    const provider = new CodexProvider();
+    
+    const result = await provider.createSession({ cwd: '/tmp/test' });
+    
+    expect(provider.isThreadOwned(result.sessionId)).toBe(true);
+  });
+});
+
 describe('CodexProvider mock mode - wait/steer/approvals', () => {
   beforeEach(() => {
     vi.stubEnv('CODEX_MOCK', '1');
