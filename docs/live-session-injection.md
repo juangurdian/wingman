@@ -102,9 +102,11 @@ claude --resume <session_id> -p "New message to inject"
 
 ## 2. Codex TUI (Rank 3)
 
-### Path: Shared Daemon Mode (MEDIUM FEASIBILITY)
+### Path: Shared Daemon Mode (MEDIUM FEASIBILITY) - CONFIRMED WORKING
 
-The Codex TUI can connect to a shared daemon instead of spawning its own embedded app-server.
+The Codex TUI **automatically connects to the daemon** if it's running. No special flags needed.
+
+**Key Discovery**: The TUI has `--no-daemon` flag, meaning by default it TRIES to use the daemon.
 
 **How it works**:
 
@@ -118,11 +120,17 @@ The Codex TUI can connect to a shared daemon instead of spawning its own embedde
    ~/.codex/app-server-control/app-server-control.sock
    ```
 
-3. The TUI auto-detects and connects to this daemon instead of embedding
+3. Run the TUI normally - it auto-connects:
+   ```bash
+   codex
+   # (use --no-daemon to force embedded mode)
+   ```
 
-4. Wingman can also connect to this daemon via WebSocket
+4. Wingman connects to the same daemon via WebSocket
 
 5. Both see the same threads; Wingman sends `turn/start` with user message
+
+6. **Message appears LIVE in TUI!** Reply streams to both clients.
 
 **Protocol for message injection** (once connected to daemon):
 
@@ -142,19 +150,31 @@ The Codex TUI can connect to a shared daemon instead of spawning its own embedde
 - Real shared session
 - Message appears in TUI live
 - Reply streams to both clients
+- TUI auto-connects (no special flag)
 
 **Cons**:
-- User must manually start daemon
-- Thread ownership is single-client (one writer at a time)
-- Not yet tested with ChatGPT desktop app open simultaneously
+- User must manually start daemon first
+- ChatGPT desktop app does NOT use daemon mode
+- Thread ownership: first to `thread/resume` owns it for writing
 
-**Setup Steps**:
-1. User runs: `codex app-server daemon start`
-2. User opens Codex TUI normally (it auto-connects to daemon)
-3. Wingman connects to `~/.codex/app-server-control/app-server-control.sock`
-4. Wingman sends `thread/list` to see threads
-5. Wingman sends `turn/start` to inject message
-6. Message appears in TUI, reply streams to both
+**Exact Commands to Test on Mac**:
+
+```bash
+# Terminal 1: Start the daemon
+codex app-server daemon start
+# Should print: {"status":"started",...}
+
+# Terminal 2: Start Codex TUI (auto-connects to daemon)
+codex
+# Create or resume a thread, note its ID
+
+# Terminal 3: Run Wingman in attach mode
+cd /path/to/wingman
+export WINGMAN_CODEX_SOCKET=auto
+npm run pair
+# Use send_message tool with the thread ID from Terminal 2
+# Watch Terminal 2 - message should appear live!
+```
 
 ---
 

@@ -8,6 +8,7 @@
     "wingman-pair": "./dist/pair.js",
     "wingman-doctor": "./dist/doctor.js",
     "wingman-tunnel": "./dist/tunnel.js",
+    "wingman-live-setup": "./dist/live-setup.js",
     "wingman-mcp": "./dist/pair.js"
   },
   "files": [
@@ -23,6 +24,7 @@
     "pair": "tsx src/pair.ts",
     "doctor": "tsx src/doctor.ts",
     "tunnel": "tsx src/tunnel.ts",
+    "live-setup": "tsx src/live-setup.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build"
