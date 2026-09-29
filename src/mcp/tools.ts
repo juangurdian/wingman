@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderRegistry, ProviderName } from '../providers/index.js';
 import type { Transcript, TranscriptItem } from '../providers/types.js';
+import { listClaudeLiveSessions, sendToClaudeSession } from '../claude-inbox.js';
 
 export const ProviderSchema = z.enum(['codex', 'claude', 'muse']);
 export const ExportFormatSchema = z.enum(['markdown', 'json']);
@@ -83,6 +84,13 @@ export const ExportTranscriptSchema = z.object({
   session_id: z.string().min(1),
   format: ExportFormatSchema,
   limit: z.number().int().positive().max(500).optional(),
+});
+
+export const ListClaudeLiveSessionsSchema = z.object({});
+
+export const SendToClaudeSessionSchema = z.object({
+  target: z.string().min(1).describe('Session target: sessionId, name, or pid'),
+  text: z.string().min(1).describe('Message text to send'),
 });
 
 function textResult(data: unknown) {
@@ -327,6 +335,24 @@ export function createToolHandlers(providers: ProviderRegistry) {
           path: filePath,
           content,
         });
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+
+    async list_claude_live_sessions(_args: z.infer<typeof ListClaudeLiveSessionsSchema>) {
+      try {
+        const sessions = await listClaudeLiveSessions();
+        return textResult({ sessions });
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+
+    async send_to_claude_session(args: z.infer<typeof SendToClaudeSessionSchema>) {
+      try {
+        const result = await sendToClaudeSession(args.target, args.text);
+        return textResult(result);
       } catch (err) {
         return errorResult(err);
       }

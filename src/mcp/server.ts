@@ -24,6 +24,8 @@ import {
   SetSessionMetaSchema,
   ExportTranscriptSchema,
   ExportFormatSchema,
+  ListClaudeLiveSessionsSchema,
+  SendToClaudeSessionSchema,
 } from './tools.js';
 import { bearerAuth } from './auth.js';
 import { createProviders } from '../providers/index.js';
@@ -259,6 +261,35 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
         },
       },
       async (args) => handlers.export_transcript(ExportTranscriptSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'list_claude_live_sessions',
+      {
+        description:
+          'List running interactive Claude Code sessions with their inbox socket status. ' +
+          'Returns sessionId, name, pid, status, whether an inbox socket was found, and permission mode. ' +
+          'Use to discover targets for send_to_claude_session.',
+        inputSchema: {},
+      },
+      async (args) => handlers.list_claude_live_sessions(ListClaudeLiveSessionsSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'send_to_claude_session',
+      {
+        description:
+          'Send a message to a running interactive Claude Code session via its inbox socket. ' +
+          'The message appears LIVE in the session as "Message from ...". ' +
+          'Target can be sessionId, name (must be unambiguous), or pid. ' +
+          'Idle sessions start a new turn; mid-turn messages are read between tool calls. ' +
+          'Sessions in bypass-permissions mode may hold the message behind an approval dialog.',
+        inputSchema: {
+          target: z.string().describe('Session target: sessionId, name, or pid'),
+          text: z.string().describe('Message text to send'),
+        },
+      },
+      async (args) => handlers.send_to_claude_session(SendToClaudeSessionSchema.parse(args)),
     );
 
     return server;

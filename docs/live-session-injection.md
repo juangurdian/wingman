@@ -6,13 +6,14 @@
 
 | Rank | Client | Path | Feasibility | Notes |
 |------|--------|------|-------------|-------|
-| 1 | Claude Code Terminal | `--input-format stream-json` | **HIGH** | Programmatic stdin injection works |
-| 2 | Claude Code Terminal | `--bg` + attach | **HIGH** | Background sessions can be controlled |
-| 3 | Codex TUI | Shared daemon mode | **MEDIUM** | Requires manual daemon setup |
-| 4 | Claude Code Terminal | `--remote-control` | **MEDIUM** | Requires claude.ai subscription |
-| 5 | Codex Desktop (ChatGPT) | Manual daemon setup | **LOW** | ChatGPT app doesn't use daemon |
-| 6 | Claude Desktop | Unknown IPC | **UNKNOWN** | Needs more investigation |
-| 7 | Any | OS-level typing automation | **LAST RESORT** | Fragile, platform-specific |
+| 1 | Claude Code Terminal | Cross-session inbox socket | **HIGH** | IMPLEMENTED - per-session Unix socket |
+| 2 | Claude Code Terminal | `--input-format stream-json` | **HIGH** | Programmatic stdin injection works |
+| 3 | Claude Code Terminal | `--bg` + attach | **HIGH** | Background sessions can be controlled |
+| 4 | Codex TUI | Shared daemon mode | **MEDIUM** | IMPLEMENTED - requires manual daemon setup |
+| 5 | Claude Code Terminal | `--remote-control` | **MEDIUM** | Requires claude.ai subscription |
+| 6 | Codex Desktop (ChatGPT) | Manual daemon setup | **LOW** | ChatGPT app doesn't use daemon |
+| 7 | Claude Desktop | Unknown IPC | **UNKNOWN** | Needs more investigation |
+| 8 | Any | OS-level typing automation | **LAST RESORT** | Fragile, platform-specific |
 
 ---
 
@@ -349,8 +350,66 @@ ws.send(JSON.stringify({
 
 ---
 
+## 5. Claude Code Cross-Session Inbox (NEW)
+
+### Path: Per-Session Unix Socket Messaging - IMPLEMENTED
+
+Claude Code sessions (interactive, background, `-p`; NOT `--bare`) bind a per-session Unix socket (Windows: named pipe) that allows cross-session message injection.
+
+**Discovery**:
+- `claude agents --json` lists live sessions with `pid`, `sessionId`, `name`, `status`, `waitingFor`
+- Registry files in `~/.claude/sessions/` contain `messagingSocketPath`, `pid`, `name`, `kind`, `jobId`
+- Socket path exported as `CLAUDE_CODE_MESSAGING_SOCKET` env var (per-session)
+- Fallback socket dir: `/tmp/cc-socks-<uid>/`
+
+**Wire Format** (connect within 30s):
+```json
+{"type":"auth","token":"$CLAUDE_CODE_MESSAGING_TOKEN"}
+{"type":"user","message":{"role":"user","content":"Your message here"}}
+```
+
+- Auth line is optional on macOS/Linux, required on Windows
+- Messages are newline-delimited JSON
+
+**Delivery Behavior**:
+- Idle session: starts a new turn
+- Mid-turn: read between tool calls, shows as "Message from ..."
+- Bypass-permissions mode: may hold behind approval dialog unless `crossSessionInbound=accept`
+
+**Wingman Tools**:
+
+```bash
+# List live Claude Code sessions with inbox socket status
+list_claude_live_sessions
+
+# Send message to a running session
+send_to_claude_session target="session_name_or_id" text="Your message"
+```
+
+**Live Test**:
+1. Start a Claude Code session: `claude`
+2. In the session, run: `echo $CLAUDE_CODE_MESSAGING_SOCKET`
+3. Note the socket path (should be something like `/tmp/cc-socks-1000/<pid>.sock`)
+4. From Wingman, use `list_claude_live_sessions` to discover the session
+5. Use `send_to_claude_session` to send a message - it appears in the interactive session!
+
+**Pros**:
+- Works with any running Claude Code session (interactive, background, -p)
+- Message appears LIVE in the session
+- No special session configuration required
+- Supports mid-turn injection between tool calls
+
+**Cons**:
+- Registry file format may vary across versions (parse defensively)
+- Windows requires `CLAUDE_CODE_MESSAGING_TOKEN` auth
+- Sessions in bypass-permissions mode may hold messages
+- `--bare` sessions don't bind inbox sockets
+
+---
+
 ## Next Steps for Prototyping
 
 1. **Claude Code stream-json**: Implement in Wingman as new provider mode
 2. **Codex daemon injection**: Add to existing CodexProvider when daemon detected
-3. **Test matrix**: Document which combinations work on Mac/Linux/Windows
+3. **Claude Code inbox**: DONE - `list_claude_live_sessions` and `send_to_claude_session` tools
+4. **Test matrix**: Document which combinations work on Mac/Linux/Windows

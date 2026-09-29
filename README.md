@@ -131,6 +131,7 @@ Docs: [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [Claude A
 - Resume discovered sessions by ID — the SDK reads session state from `~/.claude/projects/`
 - Send messages to sessions asynchronously (returns `accepted` quickly; turn runs in background)
 - Check session status (idle vs running) via `get_session` or `list_sessions`
+- **Send messages to running interactive Claude Code sessions** via their per-session inbox sockets (`list_claude_live_sessions` + `send_to_claude_session`)
 - Bearer-protect the MCP HTTP endpoint
 - Create / list / read / message / interrupt sessions (real or mock) for both providers
 - Keep you in the loop — the session stays visible on your machine
@@ -183,6 +184,8 @@ flowchart LR
 | `resolve_approval` | `provider`, `session_id`, `approval_id`, `decision` | Resolve approval (Codex); Claude returns unsupported error |
 | `set_session_meta` | `provider`, `session_id`, `name?`, `tags?` | Set session name/tags for easier discovery (Wingman-owned sessions) |
 | `export_transcript` | `provider`, `session_id`, `format`, `limit?` | Export transcript as `markdown` \| `json`; returns content + writes to `~/.wingman/exports/` |
+| `list_claude_live_sessions` | (none) | List running Claude Code sessions with inbox socket status |
+| `send_to_claude_session` | `target`, `text` | Send message to running Claude Code session via inbox socket (appears live) |
 
 ### create_session behavior
 
