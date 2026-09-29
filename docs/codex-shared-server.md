@@ -1,5 +1,7 @@
 # Codex Shared App-Server Investigation
 
+> **See also**: [Live Session Message Injection](./live-session-injection.md) for a comprehensive investigation of injecting messages into running Claude Code and Codex sessions.
+
 This document describes the findings from investigating whether Wingman can connect to an existing Codex app-server process.
 
 ## Summary

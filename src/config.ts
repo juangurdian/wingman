@@ -221,6 +221,30 @@ export function codexSocketExists(socketPath?: string): boolean {
   }
 }
 
+// Claude Code configuration
+
+/**
+ * Whether to use Claude Code's stream-json mode for programmatic control.
+ * This enables injecting messages into Claude Code sessions.
+ * 
+ * When enabled, sessions are started with:
+ *   claude -p --input-format stream-json --output-format stream-json
+ * 
+ * Priority: WINGMAN_CLAUDE_STREAM_JSON env > false
+ */
+export function useClaudeStreamJson(): boolean {
+  const env = process.env.WINGMAN_CLAUDE_STREAM_JSON?.trim().toLowerCase();
+  return env === '1' || env === 'true';
+}
+
+/**
+ * Claude Code executable path.
+ * Priority: WINGMAN_CLAUDE_PATH env > 'claude' (uses PATH)
+ */
+export function resolveClaudePath(): string {
+  return process.env.WINGMAN_CLAUDE_PATH?.trim() || 'claude';
+}
+
 // Host identity configuration
 
 /**

@@ -15,20 +15,32 @@ Wingman lets **Grok Bot act as a supervisor/manager** with local coding sessions
 
 ## Roadmap Priorities
 
-### Priority 1: Safe Shared Sessions (In Progress)
+### Priority 1: Live Session Message Injection (Top Goal)
 
-**Goal**: Attach to the SAME Codex app-server the user's app (ChatGPT desktop / Codex app) is running, so messages show up live and there is no second writer.
+**Goal**: When the user has a Claude Code or Codex chat open (ChatGPT desktop app, Codex TUI, or Claude Code terminal), messages sent through Wingman should appear LIVE in that same open chat, as if the user typed them, with the reply streaming there too.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Discover running app-server socket | In Progress | Connect to `~/.codex/app-server-control/app-server-control.sock` |
-| WebSocket-over-Unix-socket connection | In Progress | Standard HTTP Upgrade handshake, then JSON-RPC frames |
-| Read-only thread access | In Progress | Use `thread/read` and `thread/list` without resuming |
-| Safe send_message | In Progress | Warn/require `force` flag when thread may be live elsewhere |
-| Resume-by-id fallback | Existing | Current spawn mode remains as fallback |
-| Configurable RPC timeout | In Progress | `CODEX_RPC_TIMEOUT_MS` with retry logic for `thread/list` |
+| **Claude Code stream-json** | Planned | `claude -p --input-format stream-json` for programmatic input |
+| **Claude Code background sessions** | Planned | `claude --bg` + `claude attach` for persistent sessions |
+| **Claude Code remote-control** | Planned | `/remote-control` for external control (requires subscription) |
+| **Codex TUI daemon mode** | In Progress | TUI can connect to shared daemon when running |
+| Codex daemon WebSocket | In Progress | Connect via `~/.codex/app-server-control/app-server-control.sock` |
+| turn/start message injection | In Progress | Send `turn/start` to inject message into live thread |
+| Read-only thread access | Done | Use `thread/read` without resuming |
+| Thread ownership tracking | Done | Track which threads Wingman owns |
 
-**Evidence**: The Codex app-server exposes a Unix domain socket at `~/.codex/app-server-control/app-server-control.sock`. External clients can connect via WebSocket HTTP Upgrade and issue JSON-RPC commands. The `thread/read` method reads stored threads without resuming them. See [docs/codex-shared-server.md](docs/codex-shared-server.md) for protocol details.
+**Feasibility Ranking** (see [docs/live-session-injection.md](docs/live-session-injection.md)):
+1. Claude Code `--input-format stream-json` (HIGHEST - works for new sessions)
+2. Claude Code background sessions (HIGH - persistent supervised sessions)
+3. Codex TUI daemon mode (MEDIUM - requires manual daemon setup)
+4. Claude Code remote-control (MEDIUM - requires subscription)
+5. Codex ChatGPT desktop app (LOW - does NOT use daemon mode)
+6. OS-level automation (LAST RESORT - fragile, platform-specific)
+
+**Current Limitation**: The ChatGPT desktop app spawns stdio-based app-servers, not daemon mode. Attaching to its sessions requires manual daemon setup: `codex app-server daemon start`.
+
+See [docs/codex-shared-server.md](docs/codex-shared-server.md) for shared server details.
 
 ### Priority 2: Board View
 
@@ -165,6 +177,8 @@ Wingman lets **Grok Bot act as a supervisor/manager** with local coding sessions
 | `CLAUDE_DISCOVER` | `1` | Set to `0` to disable session discovery |
 | `CLAUDE_DISCOVER_DIRS` | (all) | Colon-separated directories to search |
 | `CLAUDE_SEND_TIMEOUT_MS` | `120000` | Timeout for Claude SDK operations |
+| `WINGMAN_CLAUDE_STREAM_JSON` | unset | Set to `1` for stream-json mode (programmatic control) |
+| `WINGMAN_CLAUDE_PATH` | `claude` | Path to Claude Code executable |
 
 ## Non-Goals
 
