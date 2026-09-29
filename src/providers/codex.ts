@@ -858,10 +858,13 @@ export class CodexProvider implements SessionProvider {
   
   /**
    * Connect to an existing app-server via Unix socket WebSocket.
-   * This is the attach mode for sharing sessions with the Codex daemon.
+   * This is the attach mode for sharing sessions with a Codex app-server daemon.
    * 
-   * Note: The ChatGPT desktop app does NOT use daemon mode, so this only works
-   * when `codex app-server daemon start` is running separately.
+   * Setup options:
+   * 1. Managed install: `codex app-server daemon start` (requires ~/.codex/packages/standalone)
+   * 2. Homebrew/npm: `codex app-server --listen unix://` (run manually or via launchd)
+   * 
+   * Then connect the TUI: `codex --remote unix://`
    */
   private async connectToSocket(): Promise<void> {
     const socketPath = resolveCodexSocket();
@@ -873,10 +876,15 @@ export class CodexProvider implements SessionProvider {
       throw new Error(
         `Codex app-server control socket not found at ${socketPath}.\n` +
         `\n` +
-        `The ChatGPT desktop app spawns its own stdio-based app-servers and does NOT\n` +
-        `create this socket. To use attach mode, start the daemon manually:\n` +
+        `To create this socket, start the app-server in daemon mode:\n` +
         `\n` +
+        `  Option 1 (managed install from chatgpt.com/codex/install.sh):\n` +
         `    codex app-server daemon start\n` +
+        `\n` +
+        `  Option 2 (Homebrew/npm install - run manually or via launchd):\n` +
+        `    codex app-server --listen unix://\n` +
+        `\n` +
+        `Then connect the TUI with: codex --remote unix://\n` +
         `\n` +
         `Or unset WINGMAN_CODEX_SOCKET to use spawn mode (Wingman spawns its own server).`
       );
@@ -884,13 +892,10 @@ export class CodexProvider implements SessionProvider {
     
     return new Promise((resolve, reject) => {
       // Connect via WebSocket over Unix socket
-      // The ws library supports Unix sockets via the socketPath option
-      const ws = new WebSocket(`ws+unix://${socketPath}:`, {
-        // WebSocket over Unix socket doesn't need host header
-        headers: {
-          'Connection': 'Upgrade',
-          'Upgrade': 'websocket',
-        },
+      // IMPORTANT: perMessageDeflate must be false - the Codex app-server hangs up
+      // if the client offers permessage-deflate compression in the WebSocket handshake.
+      const ws = new WebSocket(`ws+unix://${socketPath}:/`, {
+        perMessageDeflate: false,
       });
       
       const timeoutMs = Number(process.env.CODEX_RPC_TIMEOUT_MS ?? 60_000);

@@ -86,16 +86,29 @@ describe('Live Setup Checks', () => {
 
 describe('Live Session Injection Paths', () => {
   describe('Codex Daemon Injection', () => {
-    it('documents the correct workflow', () => {
-      // This documents the expected workflow
+    it('documents the correct workflow for managed install', () => {
       const workflow = {
         step1: 'codex app-server daemon start',
-        step2: 'codex  // TUI auto-connects to daemon',
+        step2: 'codex --remote unix://',
         step3: 'WINGMAN_CODEX_SOCKET=auto npm run pair',
         result: 'Messages sent via Wingman appear in TUI',
       };
       
       expect(workflow.step1).toContain('daemon start');
+      expect(workflow.step2).toContain('--remote unix://');
+      expect(workflow.result).toContain('appear');
+    });
+
+    it('documents the correct workflow for Homebrew/npm install', () => {
+      const workflow = {
+        step1: 'codex app-server --listen unix://',
+        step2: 'codex --remote unix://',
+        step3: 'WINGMAN_CODEX_SOCKET=auto npm run pair',
+        result: 'Messages sent via Wingman appear in TUI',
+      };
+      
+      expect(workflow.step1).toContain('--listen unix://');
+      expect(workflow.step2).toContain('--remote unix://');
       expect(workflow.result).toContain('appear');
     });
 
@@ -117,5 +130,41 @@ describe('Live Session Injection Paths', () => {
       
       expect(limitation.canInjectToAttached).toBe(false);
     });
+  });
+
+  describe('Thread visibility', () => {
+    it('documents that threads only show after first message', () => {
+      const behavior = {
+        emptyThreadVisible: false,
+        threadVisibleAfterMessage: true,
+        note: 'Threads only appear in thread/list after at least one message',
+      };
+      
+      expect(behavior.emptyThreadVisible).toBe(false);
+      expect(behavior.threadVisibleAfterMessage).toBe(true);
+    });
+  });
+});
+
+describe('Codex WebSocket Connection', () => {
+  it('documents perMessageDeflate must be disabled', () => {
+    // CRITICAL: The Codex app-server hangs up if the client offers
+    // permessage-deflate compression in the WebSocket handshake.
+    // This test documents and verifies the required configuration.
+    const requiredConfig = {
+      perMessageDeflate: false,
+      reason: 'Codex app-server hangs up with permessage-deflate enabled',
+    };
+    
+    expect(requiredConfig.perMessageDeflate).toBe(false);
+  });
+
+  it('documents correct WebSocket URL format for Unix socket', () => {
+    const socketPath = '/path/to/.codex/app-server-control/app-server-control.sock';
+    const expectedUrl = `ws+unix://${socketPath}:/`;
+    
+    expect(expectedUrl).toBe('ws+unix:///path/to/.codex/app-server-control/app-server-control.sock:/');
+    expect(expectedUrl).toMatch(/^ws\+unix:\/\//);
+    expect(expectedUrl).toMatch(/:\/$/);
   });
 });

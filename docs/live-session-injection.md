@@ -104,15 +104,20 @@ claude --resume <session_id> -p "New message to inject"
 
 ### Path: Shared Daemon Mode (MEDIUM FEASIBILITY) - CONFIRMED WORKING
 
-The Codex TUI **automatically connects to the daemon** if it's running. No special flags needed.
-
-**Key Discovery**: The TUI has `--no-daemon` flag, meaning by default it TRIES to use the daemon.
+**IMPORTANT (v0.152.1+)**: The TUI does NOT auto-connect to the daemon. You must explicitly use `--remote unix://`.
 
 **How it works**:
 
 1. Start the Codex app-server daemon:
+
+   **Option 1** - For managed install (from chatgpt.com/codex/install.sh):
    ```bash
    codex app-server daemon start
+   ```
+
+   **Option 2** - For Homebrew/npm install (run manually or via launchd):
+   ```bash
+   codex app-server --listen unix://
    ```
 
 2. This creates a control socket at:
@@ -120,10 +125,10 @@ The Codex TUI **automatically connects to the daemon** if it's running. No speci
    ~/.codex/app-server-control/app-server-control.sock
    ```
 
-3. Run the TUI normally - it auto-connects:
+3. Connect the TUI to the daemon (REQUIRED):
    ```bash
-   codex
-   # (use --no-daemon to force embedded mode)
+   codex --remote unix://
+   # (plain "codex" does NOT auto-connect in v0.152.1+)
    ```
 
 4. Wingman connects to the same daemon via WebSocket
@@ -131,6 +136,8 @@ The Codex TUI **automatically connects to the daemon** if it's running. No speci
 5. Both see the same threads; Wingman sends `turn/start` with user message
 
 6. **Message appears LIVE in TUI!** Reply streams to both clients.
+
+**Note**: Threads only appear in thread listings after at least one message has been sent.
 
 **Protocol for message injection** (once connected to daemon):
 
@@ -150,23 +157,31 @@ The Codex TUI **automatically connects to the daemon** if it's running. No speci
 - Real shared session
 - Message appears in TUI live
 - Reply streams to both clients
-- TUI auto-connects (no special flag)
 
 **Cons**:
 - User must manually start daemon first
+- User must explicitly connect TUI with `--remote unix://`
 - ChatGPT desktop app does NOT use daemon mode
 - Thread ownership: first to `thread/resume` owns it for writing
+- `codex app-server daemon start` only works with managed install (chatgpt.com/codex/install.sh)
+- For Homebrew/npm installs, must use `codex app-server --listen unix://` instead
 
 **Exact Commands to Test on Mac**:
 
 ```bash
 # Terminal 1: Start the daemon
+# For managed install (chatgpt.com/codex/install.sh):
 codex app-server daemon start
-# Should print: {"status":"started",...}
 
-# Terminal 2: Start Codex TUI (auto-connects to daemon)
-codex
-# Create or resume a thread, note its ID
+# For Homebrew/npm install (if daemon start fails):
+codex app-server --listen unix://
+
+# Should create socket at ~/.codex/app-server-control/app-server-control.sock
+
+# Terminal 2: Connect Codex TUI to the daemon
+codex --remote unix://
+# NOTE: Plain "codex" does NOT auto-connect in v0.152.1!
+# Create a new thread and note its ID
 
 # Terminal 3: Run Wingman in attach mode
 cd /path/to/wingman
@@ -174,7 +189,12 @@ export WINGMAN_CODEX_SOCKET=auto
 npm run pair
 # Use send_message tool with the thread ID from Terminal 2
 # Watch Terminal 2 - message should appear live!
+
+# To list daemon sessions:
+codex agents --remote unix://
 ```
+
+**Note**: Threads only appear in `codex agents` output after at least one message.
 
 ---
 
@@ -287,7 +307,11 @@ Output messages (stdout):
 Connect via WebSocket to Unix socket:
 
 ```javascript
-const ws = new WebSocket('ws+unix:///path/to/socket');
+// CRITICAL: perMessageDeflate must be false!
+// The Codex app-server hangs up if the client offers compression.
+const ws = new WebSocket('ws+unix:///path/to/socket:/', {
+  perMessageDeflate: false,
+});
 
 // Send JSON-RPC
 ws.send(JSON.stringify({
@@ -314,6 +338,14 @@ ws.send(JSON.stringify({
 4. **Platform Differences**: Solutions vary significantly by OS and client type.
 
 5. **Version Sensitivity**: These protocols may change between versions.
+
+6. **Thread Visibility**: Threads only appear in `thread/list` and `codex agents` output after at least one message has been sent.
+
+7. **WebSocket Compression**: The Codex app-server hangs up if the WebSocket client offers permessage-deflate compression. Always set `perMessageDeflate: false`.
+
+8. **TUI Connection**: In v0.152.1+, plain `codex` does NOT auto-connect to the daemon. You must use `codex --remote unix://` to connect to the app-server.
+
+9. **Daemon Start**: `codex app-server daemon start` only works with managed installs (chatgpt.com/codex/install.sh). For Homebrew/npm installs, use `codex app-server --listen unix://` instead.
 
 ---
 

@@ -83,6 +83,10 @@ function checkCodexDaemon(): CheckResult {
     'app-server-control.sock'
   );
 
+  // Check if using managed install (has ~/.codex/packages/standalone)
+  const managedInstallPath = join(homedir(), '.codex', 'packages', 'standalone');
+  const hasManagedInstall = existsSync(managedInstallPath);
+
   if (existsSync(socketPath)) {
     return {
       name: 'Codex Daemon',
@@ -95,9 +99,14 @@ function checkCodexDaemon(): CheckResult {
         '   export WINGMAN_CODEX_SOCKET=auto',
         '   npm run pair',
         '',
-        '# In another terminal, start the Codex TUI:',
-        '   codex',
-        '   # The TUI auto-connects to the daemon',
+        '# In another terminal, connect the Codex TUI to the daemon:',
+        '   codex --remote unix://',
+        '   # (plain "codex" does NOT auto-connect in v0.152.1+)',
+        '',
+        '# To list daemon sessions:',
+        '   codex agents --remote unix://',
+        '',
+        '# Note: Threads only appear after at least one message.',
         '',
         '# Now when Wingman sends a message via send_message,',
         '# it appears LIVE in the TUI!',
@@ -109,8 +118,17 @@ function checkCodexDaemon(): CheckResult {
       status: 'missing',
       message: 'Not running (no control socket)',
       setupSteps: [
-        '# Start the Codex daemon:',
+        '# Start the Codex app-server in daemon mode:',
+        '',
+        hasManagedInstall
+          ? '# Option 1 (detected: you have a managed install):'
+          : '# Option 1 (requires managed install from chatgpt.com/codex/install.sh):',
         '   codex app-server daemon start',
+        '',
+        hasManagedInstall
+          ? '# Option 2 (alternative: run manually or via launchd):'
+          : '# Option 2 (Homebrew/npm - run manually or via launchd):',
+        '   codex app-server --listen unix://',
         '',
         '# Verify it started:',
         '   codex app-server daemon version',
@@ -118,8 +136,11 @@ function checkCodexDaemon(): CheckResult {
         '# The daemon creates a control socket at:',
         `   ${socketPath}`,
         '',
-        '# Now start the Codex TUI (auto-connects to daemon):',
-        '   codex',
+        '# Connect the Codex TUI to the daemon:',
+        '   codex --remote unix://',
+        '   # (plain "codex" does NOT auto-connect in v0.152.1+)',
+        '',
+        '# Note: Threads only appear after at least one message.',
         '',
         '# And start Wingman in attach mode:',
         '   export WINGMAN_CODEX_SOCKET=auto',
@@ -200,10 +221,18 @@ function main(): void {
     '',
     'Option 1: Codex TUI with Daemon (RECOMMENDED for live injection)',
     '-----------------------------------------------------------',
-    '  Terminal 1: codex app-server daemon start',
-    '  Terminal 2: codex  # TUI auto-connects to daemon',
-    '  Terminal 3: WINGMAN_CODEX_SOCKET=auto npm run pair',
     '',
+    '  For managed install (chatgpt.com/codex/install.sh):',
+    '    Terminal 1: codex app-server daemon start',
+    '',
+    '  For Homebrew/npm install:',
+    '    Terminal 1: codex app-server --listen unix://',
+    '',
+    '  Then connect the TUI and Wingman:',
+    '    Terminal 2: codex --remote unix://',
+    '    Terminal 3: WINGMAN_CODEX_SOCKET=auto npm run pair',
+    '',
+    '  Note: Threads only appear after at least one message.',
     '  Messages from Wingman appear LIVE in the TUI!',
     '',
     'Option 2: Claude Code Background Sessions',
@@ -220,8 +249,11 @@ function main(): void {
   // Exit with error if critical components missing
   const codexDaemon = checks.find(c => c.name === 'Codex Daemon');
   if (codexDaemon?.status === 'missing') {
-    console.log('\nTo enable live injection, start the Codex daemon:\n');
+    console.log('\nTo enable live injection, start the Codex app-server:\n');
+    console.log('  # For managed install (chatgpt.com/codex/install.sh):');
     console.log('  codex app-server daemon start\n');
+    console.log('  # For Homebrew/npm install:');
+    console.log('  codex app-server --listen unix://\n');
     process.exit(1);
   }
 }
