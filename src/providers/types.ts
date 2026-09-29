@@ -28,6 +28,25 @@ export interface SessionSummary {
   hostId?: string;
   /** Human-friendly host name for display. */
   hostName?: string;
+  /**
+   * Whether this session is live (actively running).
+   * For Claude: pid from registry file is currently running.
+   * For Codex: thread is loaded in app-server (when detectable).
+   * Past sessions have stale registry files with dead pids.
+   */
+  live?: boolean;
+  /** Process ID of the live session (when available). */
+  pid?: number;
+  /**
+   * Live status from the session's own reporting (busy/idle/blocked/shell).
+   * Only available for live sessions with registry data.
+   */
+  liveStatus?: string;
+  /**
+   * Session kind: 'interactive', 'background', etc.
+   * From registry data for Claude sessions.
+   */
+  kind?: string;
 }
 
 export interface TranscriptItem {

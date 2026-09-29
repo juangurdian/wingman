@@ -8,9 +8,17 @@ import { listClaudeLiveSessions, sendToClaudeSession } from '../claude-inbox.js'
 
 export const ProviderSchema = z.enum(['codex', 'claude', 'muse']);
 export const ExportFormatSchema = z.enum(['markdown', 'json']);
+export const SessionStateFilterSchema = z.enum(['live', 'past', 'all']);
 
 export const ListSessionsSchema = z.object({
   provider: ProviderSchema.optional(),
+  /**
+   * Filter by session state:
+   * - 'live': Only sessions with a running pid (active sessions)
+   * - 'past': Only sessions with stale registry (past/resumable sessions)
+   * - 'all': All sessions, with live sorted first (default)
+   */
+  state: SessionStateFilterSchema.optional(),
 });
 
 export const ReadTranscriptSchema = z.object({
@@ -119,10 +127,14 @@ export function createToolHandlers(providers: ProviderRegistry) {
         const names: ProviderName[] = args.provider
           ? [args.provider]
           : ['codex', 'claude', 'muse'];
+        const stateFilter = args.state ?? 'all';
         const sessions = [];
         for (const name of names) {
           try {
-            const list = await providers.get(name).listSessions();
+            // Claude provider supports state filter
+            const list = name === 'claude'
+              ? await (providers.get(name) as unknown as { listSessions: (opts?: { state?: string }) => Promise<unknown[]> }).listSessions({ state: stateFilter })
+              : await providers.get(name).listSessions();
             sessions.push(...list);
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
@@ -158,6 +170,19 @@ export function createToolHandlers(providers: ProviderRegistry) {
             }
           }
         }
+        
+        // Sort all sessions with live first when state is 'all' or unset
+        if (stateFilter === 'all') {
+          sessions.sort((a, b) => {
+            const aLive = (a as { live?: boolean }).live ?? false;
+            const bLive = (b as { live?: boolean }).live ?? false;
+            if (aLive && !bLive) return -1;
+            if (!aLive && bLive) return 1;
+            return ((b as { updatedAt?: number }).updatedAt ?? 0) - 
+                   ((a as { updatedAt?: number }).updatedAt ?? 0);
+          });
+        }
+        
         return textResult({ sessions });
       } catch (err) {
         return errorResult(err);

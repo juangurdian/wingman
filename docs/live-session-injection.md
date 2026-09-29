@@ -397,12 +397,28 @@ Claude Code sessions (interactive, background, `-p`; NOT `--bare`) bind a per-se
 **Wingman Tools**:
 
 ```bash
-# List live Claude Code sessions with inbox socket status
-list_claude_live_sessions
+# List Claude sessions with liveness info
+list_sessions provider="claude"
+# Or with state filter:
+list_sessions provider="claude" state="live"   # Only live sessions
+list_sessions provider="claude" state="past"   # Only past sessions
+list_sessions provider="claude" state="all"    # All sessions (default), live first
 
-# Send message to a running session
+# Send message to a session
+send_message provider="claude" session_id="..." text="..."
+# For LIVE sessions: uses inbox injection (no fork)
+# For PAST sessions: uses SDK resume (may fork if also open elsewhere)
+
+# Direct inbox injection (only for live sessions)
 send_to_claude_session target="session_name_or_id" text="Your message"
 ```
+
+**Session Liveness**: A Claude session is "live" when its pid is running (cross-platform check via `process.kill(pid, 0)` on POSIX, `tasklist` on Windows). Live sessions can receive messages via inbox injection without forking. Past sessions have stale registry files with dead pids and must be resumed via SDK (which may fork if the session is also open interactively elsewhere).
+
+**Name Resolution**: When targeting a session by name, Wingman prefers live matches:
+- If exactly one live session matches the name, use it (even if past sessions share the name)
+- If multiple live sessions match, return an ambiguity error listing them
+- If no live sessions match, fall back to past sessions
 
 **Live Test (verified on Windows with Claude Code 2.1.284)**:
 1. Start a Claude Code session: `claude`

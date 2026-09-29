@@ -56,6 +56,12 @@ See [docs/codex-shared-server.md](docs/codex-shared-server.md) for shared server
 | Last activity timestamp | Existing | `updatedAt` field on sessions |
 | PR association | Planned | Track branch/PR for worker sessions |
 | Unified board endpoint | Planned | Single call aggregating all worker state |
+| **Live/Past session separation** | Done (Claude) | Claude sessions include `live`, `pid`, `liveStatus`, `kind` |
+| Codex liveness detection | Planned | Could use `thread/loaded/list` to detect active threads |
+
+**Claude Liveness Detection**: Sessions are marked `live: true` when their pid is running (cross-platform check). Live sessions can receive messages via inbox injection; past sessions require SDK resume (which may fork if the session is also open elsewhere). The `state` filter supports `live`, `past`, or `all` (default).
+
+**Codex Liveness Note**: Codex's `thread/loaded/list` could detect which threads are currently loaded in the app-server, but this isn't exposed in `list_sessions` yet. Unlike Claude's registry approach (which checks if a pid is running), Codex would need to be connected to the app-server first. Currently all Codex sessions are listed without a `live` flag.
 
 ### Priority 3: Assign Work
 

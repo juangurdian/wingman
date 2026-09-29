@@ -37,11 +37,48 @@
  * Cost note: Each injected message is a full turn on that session's context.
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join, basename } from 'node:path';
 import { createConnection, type Socket } from 'node:net';
+
+/**
+ * Check if a process with the given PID is currently running.
+ * Cross-platform: uses process.kill(pid, 0) on POSIX, tasklist on Windows.
+ * Handles EPERM as alive (process exists but we don't have permission to signal it).
+ */
+export function isPidRunning(pid: number): boolean {
+  if (!pid || pid <= 0) return false;
+
+  if (platform() === 'win32') {
+    try {
+      // On Windows, use tasklist to check if pid exists
+      const result = execSync(`tasklist /FI "PID eq ${pid}" /NH`, {
+        encoding: 'utf8',
+        timeout: 5000,
+        windowsHide: true,
+      });
+      // tasklist returns "INFO: No tasks are running..." if pid doesn't exist
+      // Otherwise it returns a line with the process info
+      return !result.includes('No tasks') && result.includes(String(pid));
+    } catch {
+      return false;
+    }
+  }
+
+  // POSIX: use process.kill(pid, 0) which checks if process exists without sending a signal
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    // EPERM means process exists but we don't have permission to signal it
+    if (code === 'EPERM') return true;
+    // ESRCH means no such process
+    return false;
+  }
+}
 
 export interface ClaudeLiveSession {
   sessionId: string;
@@ -71,6 +108,12 @@ export interface ClaudeLiveSession {
   updatedAt?: number;
   /** Source of discovery */
   source: 'agents' | 'registry' | 'both';
+  /** 
+   * Whether this session is live (pid is running and registry file exists).
+   * Live sessions can receive messages via inbox injection.
+   * Past sessions have stale registry files (pid no longer running).
+   */
+  live?: boolean;
 }
 
 export interface SendToClaudeResult {
@@ -82,6 +125,14 @@ export interface SendToClaudeResult {
   warning?: string;
   /** Error message if not delivered */
   error?: string;
+  /** Whether the session was live (inbox injection) or past (would need SDK resume) */
+  live?: boolean;
+  /** 
+   * Delivery method used:
+   * - 'inbox': Live session, message sent via cross-session inbox socket
+   * - 'past_session': Target is a past session, cannot deliver via inbox
+   */
+  method?: 'inbox' | 'past_session';
 }
 
 export interface ClaudeAgentsEntry {
@@ -120,6 +171,16 @@ export interface ClaudeKeyFileEntry {
   peerToken?: string;
   procStartFt?: number;
   pidDomain?: string;
+}
+
+/**
+ * Registry entry with liveness information.
+ */
+export interface ClaudeRegistryWithLiveness extends ClaudeRegistryEntry {
+  /** Whether the pid from this registry file is currently running */
+  pidRunning: boolean;
+  /** Source file path */
+  registryPath?: string;
 }
 
 function useMock(): boolean {
@@ -297,6 +358,57 @@ export function scanRegistryFiles(): Map<string, ClaudeRegistryEntry> {
 }
 
 /**
+ * Scan registry directory for session files with liveness information.
+ * Registry files are named <pid>.json. A session is "live" if the pid is running.
+ */
+export function scanRegistryFilesWithLiveness(): Map<string, ClaudeRegistryWithLiveness> {
+  const result = new Map<string, ClaudeRegistryWithLiveness>();
+  const sessionsDir = getSessionsDir();
+
+  if (!existsSync(sessionsDir)) {
+    return result;
+  }
+
+  try {
+    const files = readdirSync(sessionsDir);
+    for (const file of files) {
+      // Only process <pid>.json files (not .key files)
+      if (!file.endsWith('.json')) continue;
+      // Skip files that don't look like <number>.json
+      const pidMatch = file.match(/^(\d+)\.json$/);
+      if (!pidMatch) continue;
+
+      const filePath = join(sessionsDir, file);
+      try {
+        const stat = statSync(filePath);
+        if (!stat.isFile()) continue;
+
+        const content = readFileSync(filePath, 'utf8');
+        const entry = parseRegistryFile(content);
+        if (entry) {
+          const pid = entry.pid ?? parseInt(pidMatch[1], 10);
+          const pidRunning = isPidRunning(pid);
+          const key = entry.sessionId ?? pid.toString();
+          
+          result.set(key, {
+            ...entry,
+            pid,
+            pidRunning,
+            registryPath: filePath,
+          });
+        }
+      } catch {
+        // Skip unreadable files
+      }
+    }
+  } catch {
+    // Directory not readable
+  }
+
+  return result;
+}
+
+/**
  * Check if a socket/pipe path exists and is accessible.
  * For Unix sockets, check if it's a socket file.
  * For Windows named pipes, we can't easily check existence without connecting.
@@ -344,7 +456,9 @@ export function runClaudeAgents(): ClaudeAgentsEntry[] {
 }
 
 /**
- * List all live Claude Code sessions with their inbox socket status.
+ * List all Claude Code sessions with liveness and inbox socket status.
+ * Live sessions have a running pid (checked cross-platform).
+ * Past sessions have stale registry files with dead pids.
  */
 export async function listClaudeLiveSessions(): Promise<ClaudeLiveSession[]> {
   if (useMock()) {
@@ -359,6 +473,7 @@ export async function listClaudeLiveSessions(): Promise<ClaudeLiveSession[]> {
     const key = agent.sessionId ?? agent.id ?? agent.pid?.toString();
     if (!key) continue;
 
+    // Sessions from `claude agents` are always live (it only shows running sessions)
     sessions.set(key, {
       sessionId: key,
       pid: agent.pid,
@@ -368,11 +483,12 @@ export async function listClaudeLiveSessions(): Promise<ClaudeLiveSession[]> {
       waitingFor: agent.waitingFor,
       agentId: agent.id,
       source: 'agents',
+      live: true, // `claude agents` only shows running sessions
     });
   }
 
-  // 2. Merge with registry files
-  const registry = scanRegistryFiles();
+  // 2. Merge with registry files (with liveness check)
+  const registry = scanRegistryFilesWithLiveness();
   for (const [key, entry] of registry) {
     const existing = sessions.get(key) ??
       (entry.pid ? sessions.get(entry.pid.toString()) : undefined) ??
@@ -391,8 +507,10 @@ export async function listClaudeLiveSessions(): Promise<ClaudeLiveSession[]> {
       if (!existing.name && entry.name) existing.name = entry.name;
       if (!existing.pid && entry.pid) existing.pid = entry.pid;
       if (!existing.status && entry.status) existing.status = entry.status;
+      // Keep live=true if already set from agents, otherwise use registry check
+      if (!existing.live) existing.live = entry.pidRunning;
     } else {
-      // New session from registry only
+      // New session from registry only - liveness determined by pid check
       sessions.set(key, {
         sessionId: entry.sessionId ?? key,
         pid: entry.pid,
@@ -406,6 +524,7 @@ export async function listClaudeLiveSessions(): Promise<ClaudeLiveSession[]> {
         pidDomain: entry.pidDomain,
         updatedAt: entry.updatedAt,
         source: 'registry',
+        live: entry.pidRunning,
       });
     }
   }
@@ -420,40 +539,88 @@ export async function listClaudeLiveSessions(): Promise<ClaudeLiveSession[]> {
   return Array.from(sessions.values());
 }
 
+export interface ResolveSessionResult {
+  session: ClaudeLiveSession | null;
+  error?: string;
+  matches?: ClaudeLiveSession[];
+  /** Whether the resolved session is a past session (not live) */
+  resolvedToPast?: boolean;
+}
+
 /**
  * Find a session by target (sessionId, name, or pid).
- * Returns error if ambiguous (multiple matches by name).
+ * 
+ * Resolution priority:
+ * 1. Exact sessionId match (live preferred)
+ * 2. Exact agentId match
+ * 3. Exact pid match
+ * 4. Name substring match with live session preference:
+ *    - If exactly one live session matches, use it (even if past sessions share the name)
+ *    - If multiple live sessions match, return ambiguity error
+ *    - If no live sessions match, fall back to past sessions
  */
 export async function resolveSessionTarget(
   target: string,
-): Promise<{ session: ClaudeLiveSession | null; error?: string; matches?: ClaudeLiveSession[] }> {
+): Promise<ResolveSessionResult> {
   const sessions = await listClaudeLiveSessions();
 
-  // Try exact sessionId match
-  const byId = sessions.find((s) => s.sessionId === target);
-  if (byId) return { session: byId };
+  // Try exact sessionId match - prefer live session if multiple have same id (unlikely)
+  const byIdMatches = sessions.filter((s) => s.sessionId === target);
+  if (byIdMatches.length > 0) {
+    const liveMatch = byIdMatches.find((s) => s.live);
+    if (liveMatch) return { session: liveMatch };
+    return { session: byIdMatches[0], resolvedToPast: !byIdMatches[0].live };
+  }
 
   // Try exact agentId match
   const byAgentId = sessions.find((s) => s.agentId === target);
-  if (byAgentId) return { session: byAgentId };
+  if (byAgentId) return { session: byAgentId, resolvedToPast: !byAgentId.live };
 
   // Try pid match
   const pid = parseInt(target, 10);
   if (!isNaN(pid)) {
     const byPid = sessions.find((s) => s.pid === pid);
-    if (byPid) return { session: byPid };
+    if (byPid) return { session: byPid, resolvedToPast: !byPid.live };
   }
 
-  // Try name match (case-insensitive substring)
+  // Try name match (case-insensitive substring) with live preference
   const byName = sessions.filter(
     (s) => s.name && s.name.toLowerCase().includes(target.toLowerCase()),
   );
-  if (byName.length === 1) return { session: byName[0] };
-  if (byName.length > 1) {
+  
+  if (byName.length === 0) {
+    return { session: null, error: `No session found matching "${target}"` };
+  }
+  
+  // Separate live and past matches
+  const liveMatches = byName.filter((s) => s.live);
+  const pastMatches = byName.filter((s) => !s.live);
+  
+  // If exactly one live session matches, use it
+  if (liveMatches.length === 1) {
+    return { session: liveMatches[0] };
+  }
+  
+  // If multiple live sessions match, return ambiguity error (only list live ones)
+  if (liveMatches.length > 1) {
     return {
       session: null,
-      error: `Ambiguous target "${target}" matches ${byName.length} sessions`,
-      matches: byName,
+      error: `Ambiguous target "${target}" matches ${liveMatches.length} live sessions`,
+      matches: liveMatches,
+    };
+  }
+  
+  // No live matches - fall back to past sessions
+  if (pastMatches.length === 1) {
+    return { session: pastMatches[0], resolvedToPast: true };
+  }
+  
+  if (pastMatches.length > 1) {
+    return {
+      session: null,
+      error: `Ambiguous target "${target}" matches ${pastMatches.length} past sessions (no live matches)`,
+      matches: pastMatches,
+      resolvedToPast: true,
     };
   }
 
@@ -462,6 +629,9 @@ export async function resolveSessionTarget(
 
 /**
  * Send a message to a Claude Code session via its inbox socket/pipe.
+ * 
+ * For live sessions (pid running): uses cross-session inbox socket injection.
+ * For past sessions (pid not running): returns error indicating SDK resume is needed.
  */
 export async function sendToClaudeSession(
   target: string,
@@ -471,13 +641,13 @@ export async function sendToClaudeSession(
     return mockSendToSession(target, text);
   }
 
-  // Resolve target
-  const { session, error, matches } = await resolveSessionTarget(target);
+  // Resolve target with live preference
+  const { session, error, matches, resolvedToPast } = await resolveSessionTarget(target);
 
   if (!session) {
     if (matches && matches.length > 0) {
       const matchList = matches
-        .map((m) => `  - sessionId: ${m.sessionId}, name: ${m.name ?? '(unnamed)'}, pid: ${m.pid ?? '?'}`)
+        .map((m) => `  - sessionId: ${m.sessionId}, name: ${m.name ?? '(unnamed)'}, pid: ${m.pid ?? '?'}, live: ${m.live ?? false}`)
         .join('\n');
       return {
         sessionId: target,
@@ -492,12 +662,26 @@ export async function sendToClaudeSession(
     };
   }
 
+  // If resolved to a past session, can't use inbox - need SDK resume
+  if (!session.live || resolvedToPast) {
+    return {
+      sessionId: session.sessionId,
+      delivered: false,
+      live: false,
+      method: 'past_session',
+      error: `Session "${session.sessionId}" is a past session (pid ${session.pid ?? 'unknown'} not running). ` +
+        `Use send_message with provider='claude' to resume it via SDK. ` +
+        `Note: Resuming a session also open interactively would fork it.`,
+    };
+  }
+
   // Check socket
   const socketPath = session.messagingSocketPath;
   if (!socketPath) {
     return {
       sessionId: session.sessionId,
       delivered: false,
+      live: true,
       error: `No messaging socket path found for session "${session.sessionId}". ` +
         `The session may not have cross-session messaging enabled, or the registry file is incomplete.`,
     };
@@ -509,8 +693,9 @@ export async function sendToClaudeSession(
       sessionId: session.sessionId,
       delivered: false,
       socketPath,
+      live: true,
       error: `Socket file does not exist: ${socketPath}. ` +
-        `The session may have exited or the socket was cleaned up.`,
+        `The session may have just exited or the socket was cleaned up.`,
     };
   }
 
@@ -524,6 +709,8 @@ export async function sendToClaudeSession(
       sessionId: session.sessionId,
       delivered: true,
       socketPath,
+      live: true,
+      method: 'inbox',
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -534,6 +721,7 @@ export async function sendToClaudeSession(
         sessionId: session.sessionId,
         delivered: false,
         socketPath,
+        live: true,
         error: `Socket/pipe not reachable: ${msg}. The session may have exited.`,
       };
     }
@@ -543,6 +731,7 @@ export async function sendToClaudeSession(
         sessionId: session.sessionId,
         delivered: false,
         socketPath,
+        live: true,
         error: `Authentication rejected or connection closed. ` +
           (authToken ? 'Token may be invalid.' : 'No auth token found - auth may be required.'),
       };
@@ -552,6 +741,7 @@ export async function sendToClaudeSession(
       sessionId: session.sessionId,
       delivered: false,
       socketPath,
+      live: true,
       error: `Failed to send message: ${msg}`,
     };
   }
@@ -708,12 +898,12 @@ async function mockSendToSession(target: string, text: string): Promise<SendToCl
     return mockSendHandler(target, text);
   }
 
-  const { session, error, matches } = await resolveSessionTarget(target);
+  const { session, error, matches, resolvedToPast } = await resolveSessionTarget(target);
 
   if (!session) {
     if (matches && matches.length > 0) {
       const matchList = matches
-        .map((m) => `  - sessionId: ${m.sessionId}, name: ${m.name ?? '(unnamed)'}, pid: ${m.pid ?? '?'}`)
+        .map((m) => `  - sessionId: ${m.sessionId}, name: ${m.name ?? '(unnamed)'}, pid: ${m.pid ?? '?'}, live: ${m.live ?? false}`)
         .join('\n');
       return {
         sessionId: target,
@@ -728,11 +918,25 @@ async function mockSendToSession(target: string, text: string): Promise<SendToCl
     };
   }
 
+  // Check if session is past (not live)
+  if (!session.live || resolvedToPast) {
+    return {
+      sessionId: session.sessionId,
+      delivered: false,
+      live: false,
+      method: 'past_session',
+      error: `Session "${session.sessionId}" is a past session (pid ${session.pid ?? 'unknown'} not running). ` +
+        `Use send_message with provider='claude' to resume it via SDK. ` +
+        `Note: Resuming a session also open interactively would fork it.`,
+    };
+  }
+
   if (!session.socketExists && !isWindowsNamedPipe(session.messagingSocketPath ?? '')) {
     return {
       sessionId: session.sessionId,
       delivered: false,
       socketPath: session.messagingSocketPath,
+      live: true,
       error: 'Socket does not exist (mock)',
     };
   }
@@ -741,5 +945,7 @@ async function mockSendToSession(target: string, text: string): Promise<SendToCl
     sessionId: session.sessionId,
     delivered: true,
     socketPath: session.messagingSocketPath,
+    live: true,
+    method: 'inbox',
   };
 }

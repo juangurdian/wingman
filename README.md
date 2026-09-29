@@ -172,7 +172,7 @@ flowchart LR
 
 | Tool | Args | Notes |
 |------|------|--------|
-| `list_sessions` | `provider?`: `codex` \| `claude` | Lists sessions for one or both providers (includes `status`, `source`, `tags`, `hostId`, `hostName`) |
+| `list_sessions` | `provider?`, `state?` | Lists sessions with optional `state` filter: `live` \| `past` \| `all` (default). Claude sessions include `live`, `pid`, `liveStatus`, `kind` |
 | `get_session` | `provider`, `session_id` | Get detailed session info including status (`idle` / `running`), tags, and host identity |
 | `read_transcript` | `provider`, `session_id`, `limit?` | Recent messages (newest at end) |
 | `send_message` | `provider`, `session_id`, `text` | Codex: `turn/start`; Claude: returns `accepted` quickly, turn runs async |
@@ -216,7 +216,9 @@ npx wingman-mcp
 
 ### send_message behavior
 
-For **Claude sessions**, `send_message` returns immediately with `{ status: "accepted", turnId }` while the SDK query runs in the background. Use `get_session` or `read_transcript` to observe progress. This prevents MCP HTTP timeouts during long model turns.
+For **live Claude sessions** (pid running), `send_message` uses inbox injection via the session's cross-session socket. The message appears in the existing interactive session without forking. Returns `{ status: "delivered_via_inbox" }`.
+
+For **past Claude sessions** (pid not running) or when inbox fails, `send_message` falls back to SDK resume. Returns `{ status: "accepted", turnId }` while the turn runs in background. **Warning**: Resuming a session also open interactively elsewhere will fork it.
 
 For **Codex sessions**, `send_message` blocks until `turn/start` returns (typically fast), then returns `{ status: "completed" | "inProgress" }`.
 
@@ -363,6 +365,10 @@ Sessions returned by `list_sessions` include:
 | `tags` | `string[]?` | User-set tags for categorization/filtering |
 | `gitBranch` | `string?` | Git branch at end of session (discovered) |
 | `tag` | `string?` | Legacy single tag (discovered sessions only) |
+| `live` | `boolean?` | Whether session is live (pid running) — Claude only |
+| `pid` | `number?` | Process ID of live session — Claude only |
+| `liveStatus` | `string?` | Status from registry (busy/idle/blocked) — live Claude only |
+| `kind` | `string?` | Session kind (interactive/background) — Claude only |
 
 ### Claude session storage
 

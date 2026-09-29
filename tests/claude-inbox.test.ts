@@ -483,6 +483,7 @@ describe('Claude Inbox - sendToClaudeSession (mock mode)', () => {
         messagingSocketPath: '/tmp/test.sock',
         socketExists: true,
         source: 'both',
+        live: true, // Must be live to deliver via inbox
       },
     ]);
     
@@ -504,6 +505,7 @@ describe('Claude Inbox - sendToClaudeSession (mock mode)', () => {
         messagingSocketPath: '\\\\.\\pipe\\LOCAL\\cc-msg-abc123',
         socketExists: true,
         source: 'both',
+        live: true, // Must be live to deliver via inbox
       },
     ]);
     
@@ -524,6 +526,7 @@ describe('Claude Inbox - sendToClaudeSession (mock mode)', () => {
         messagingSocketPath: '/tmp/test.sock',
         socketExists: false,
         source: 'both',
+        live: true, // Live session, but socket doesn't exist
       },
     ]);
     
@@ -765,5 +768,224 @@ describe('Claude Inbox - Windows pipe path handling', () => {
     expect(isWindowsNamedPipe('/tmp/socket.sock')).toBe(false);
     expect(isWindowsNamedPipe('/var/run/claude.sock')).toBe(false);
     expect(isWindowsNamedPipe('C:\\Users\\test\\socket')).toBe(false);
+  });
+});
+
+describe('Claude Inbox - isPidRunning', () => {
+  it('returns true for current process pid', async () => {
+    const { isPidRunning } = await import('../src/claude-inbox.js');
+    
+    // Current process is always running
+    expect(isPidRunning(process.pid)).toBe(true);
+  });
+
+  it('returns false for invalid pids', async () => {
+    const { isPidRunning } = await import('../src/claude-inbox.js');
+    
+    expect(isPidRunning(0)).toBe(false);
+    expect(isPidRunning(-1)).toBe(false);
+    expect(isPidRunning(NaN)).toBe(false);
+  });
+
+  it('returns false for very high pid unlikely to exist', async () => {
+    const { isPidRunning } = await import('../src/claude-inbox.js');
+    
+    // Very high pid unlikely to exist
+    expect(isPidRunning(9999999)).toBe(false);
+  });
+});
+
+describe('Claude Inbox - scanRegistryFilesWithLiveness', () => {
+  let tempDir: string;
+  
+  beforeEach(() => {
+    tempDir = join(tmpdir(), `claude-inbox-liveness-test-${Date.now()}`);
+    mkdirSync(tempDir, { recursive: true });
+    vi.stubEnv('CLAUDE_SESSIONS_DIR', tempDir);
+    vi.stubEnv('CLAUDE_INBOX_MOCK', '0');
+  });
+  
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    if (existsSync(tempDir)) {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('marks session as live when pid is running', async () => {
+    const { scanRegistryFilesWithLiveness } = await import('../src/claude-inbox.js');
+    
+    // Use current process pid (guaranteed to be running)
+    const pid = process.pid;
+    writeFileSync(
+      join(tempDir, `${pid}.json`),
+      JSON.stringify({
+        pid,
+        sessionId: 'live_session',
+        messagingSocketPath: '/tmp/live.sock',
+        status: 'idle',
+      }),
+    );
+    
+    const result = scanRegistryFilesWithLiveness();
+    
+    expect(result.size).toBe(1);
+    const session = result.get('live_session');
+    expect(session).toBeDefined();
+    expect(session!.pidRunning).toBe(true);
+  });
+
+  it('marks session as not live when pid is not running', async () => {
+    const { scanRegistryFilesWithLiveness } = await import('../src/claude-inbox.js');
+    
+    // Use a very high pid that's unlikely to exist
+    const deadPid = 9999999;
+    writeFileSync(
+      join(tempDir, `${deadPid}.json`),
+      JSON.stringify({
+        pid: deadPid,
+        sessionId: 'past_session',
+        messagingSocketPath: '/tmp/past.sock',
+      }),
+    );
+    
+    const result = scanRegistryFilesWithLiveness();
+    
+    expect(result.size).toBe(1);
+    const session = result.get('past_session');
+    expect(session).toBeDefined();
+    expect(session!.pidRunning).toBe(false);
+  });
+});
+
+describe('Claude Inbox - name resolution with live preference', () => {
+  beforeEach(() => {
+    vi.stubEnv('CLAUDE_INBOX_MOCK', '1');
+  });
+  
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('prefers live session when name matches both live and past', async () => {
+    const { resolveSessionTarget, setMockLiveSessions } = await import('../src/claude-inbox.js');
+    
+    setMockLiveSessions([
+      { sessionId: 'live_abc', name: 'Reddit agent', live: true, pid: 1000, source: 'both' },
+      { sessionId: 'past_def', name: 'Reddit agent from 3 weeks ago', live: false, source: 'registry' },
+    ]);
+    
+    const result = await resolveSessionTarget('Reddit');
+    
+    expect(result.session).not.toBeNull();
+    expect(result.session!.sessionId).toBe('live_abc');
+    expect(result.session!.live).toBe(true);
+    expect(result.resolvedToPast).toBeFalsy();
+    
+    setMockLiveSessions([]);
+  });
+
+  it('returns ambiguity error when multiple live sessions match', async () => {
+    const { resolveSessionTarget, setMockLiveSessions } = await import('../src/claude-inbox.js');
+    
+    setMockLiveSessions([
+      { sessionId: 'live_1', name: 'Reddit agent core', live: true, pid: 1000, source: 'both' },
+      { sessionId: 'live_2', name: 'Reddit agent growth', live: true, pid: 2000, source: 'both' },
+      { sessionId: 'past_3', name: 'Reddit agent old', live: false, source: 'registry' },
+    ]);
+    
+    const result = await resolveSessionTarget('Reddit');
+    
+    expect(result.session).toBeNull();
+    expect(result.error).toMatch(/ambiguous.*2 live sessions/i);
+    expect(result.matches).toHaveLength(2);
+    // Should only list live matches
+    expect(result.matches!.every(m => m.live)).toBe(true);
+    
+    setMockLiveSessions([]);
+  });
+
+  it('falls back to past sessions when no live match', async () => {
+    const { resolveSessionTarget, setMockLiveSessions } = await import('../src/claude-inbox.js');
+    
+    setMockLiveSessions([
+      { sessionId: 'live_abc', name: 'Active Project', live: true, source: 'both' },
+      { sessionId: 'past_def', name: 'Reddit agent', live: false, source: 'registry' },
+    ]);
+    
+    const result = await resolveSessionTarget('Reddit');
+    
+    expect(result.session).not.toBeNull();
+    expect(result.session!.sessionId).toBe('past_def');
+    expect(result.resolvedToPast).toBe(true);
+    
+    setMockLiveSessions([]);
+  });
+
+  it('returns ambiguity error for multiple past sessions (no live match)', async () => {
+    const { resolveSessionTarget, setMockLiveSessions } = await import('../src/claude-inbox.js');
+    
+    setMockLiveSessions([
+      { sessionId: 'past_1', name: 'Reddit agent v1', live: false, source: 'registry' },
+      { sessionId: 'past_2', name: 'Reddit agent v2', live: false, source: 'registry' },
+    ]);
+    
+    const result = await resolveSessionTarget('Reddit');
+    
+    expect(result.session).toBeNull();
+    expect(result.error).toMatch(/ambiguous.*2 past sessions/i);
+    expect(result.resolvedToPast).toBe(true);
+    
+    setMockLiveSessions([]);
+  });
+});
+
+describe('Claude Inbox - sendToClaudeSession with past sessions', () => {
+  beforeEach(() => {
+    vi.stubEnv('CLAUDE_INBOX_MOCK', '1');
+  });
+  
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('returns error for past session suggesting SDK resume', async () => {
+    const { sendToClaudeSession, setMockLiveSessions } = await import('../src/claude-inbox.js');
+    
+    setMockLiveSessions([
+      { sessionId: 'past_session', name: 'Old Session', live: false, pid: 99999, source: 'registry' },
+    ]);
+    
+    const result = await sendToClaudeSession('past_session', 'Hello');
+    
+    expect(result.delivered).toBe(false);
+    expect(result.live).toBe(false);
+    expect(result.method).toBe('past_session');
+    expect(result.error).toMatch(/past session.*SDK/i);
+    
+    setMockLiveSessions([]);
+  });
+
+  it('delivers to live session via inbox', async () => {
+    const { sendToClaudeSession, setMockLiveSessions } = await import('../src/claude-inbox.js');
+    
+    setMockLiveSessions([
+      {
+        sessionId: 'live_session',
+        name: 'Active Session',
+        live: true,
+        messagingSocketPath: '/tmp/mock.sock',
+        socketExists: true,
+        source: 'both',
+      },
+    ]);
+    
+    const result = await sendToClaudeSession('live_session', 'Hello');
+    
+    expect(result.delivered).toBe(true);
+    expect(result.live).toBe(true);
+    expect(result.method).toBe('inbox');
+    
+    setMockLiveSessions([]);
   });
 });
