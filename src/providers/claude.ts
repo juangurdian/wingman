@@ -41,6 +41,11 @@ import {
   resolveHostId,
   resolveHostName,
 } from '../config.js';
+import {
+  listClaudeLiveSessions,
+  sendToClaudeSession as sendToClaudeInbox,
+  type ClaudeLiveSession,
+} from '../claude-inbox.js';
 
 interface WingmanClaudeSession {
   sessionId: string;
@@ -230,9 +235,10 @@ export class ClaudeProvider implements SessionProvider {
     return s;
   }
 
-  async listSessions(): Promise<SessionSummary[]> {
+  async listSessions(opts?: { state?: 'live' | 'past' | 'all' }): Promise<SessionSummary[]> {
     const hostId = resolveHostId();
     const hostName = resolveHostName();
+    const stateFilter = opts?.state ?? 'all';
     
     if (useMock()) {
       const wingmanSessions: SessionSummary[] = [...this.mockSessions.values()].map((s) => ({
@@ -248,10 +254,11 @@ export class ClaudeProvider implements SessionProvider {
         tags: s.tags,
         hostId,
         hostName,
+        live: true, // Mock wingman sessions are always "live"
       }));
 
       if (!discoveryEnabled()) {
-        return wingmanSessions;
+        return this.sortAndFilterByState(wingmanSessions, stateFilter);
       }
 
       const discovered: SessionSummary[] = [...this.mockDiscovered.values()].map((s) => ({
@@ -269,6 +276,7 @@ export class ClaudeProvider implements SessionProvider {
         tags: s.tags ?? (s.tag ? [s.tag] : undefined),
         hostId,
         hostName,
+        live: false, // Mock discovered sessions are "past"
       }));
 
       const wingmanIds = new Set(wingmanSessions.map((s) => s.id));
@@ -279,42 +287,141 @@ export class ClaudeProvider implements SessionProvider {
         }
       }
 
-      merged.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-      return merged;
+      return this.sortAndFilterByState(merged, stateFilter);
+    }
+
+    // Get live sessions from inbox (cross-session messaging registry)
+    let liveSessions: ClaudeLiveSession[] = [];
+    try {
+      liveSessions = await listClaudeLiveSessions();
+    } catch {
+      // Live session discovery failed, continue with SDK discovery
+    }
+
+    // Build map of live session info by sessionId
+    const liveSessionMap = new Map<string, ClaudeLiveSession>();
+    for (const ls of liveSessions) {
+      liveSessionMap.set(ls.sessionId, ls);
     }
 
     const registry = loadRegistry();
-    const wingmanSessions: SessionSummary[] = registry.sessions.map((reg) => ({
-      id: reg.sessionId,
-      provider: 'claude' as const,
-      cwd: reg.cwd,
-      name: reg.name,
-      preview: reg.preview,
-      status: this.activeTurns.has(reg.sessionId) ? 'running' : 'idle',
-      createdAt: reg.createdAt,
-      updatedAt: reg.updatedAt,
-      source: 'wingman' as const,
-      tags: reg.tags,
-      hostId,
-      hostName,
-    }));
+    const wingmanSessions: SessionSummary[] = registry.sessions.map((reg) => {
+      const liveInfo = liveSessionMap.get(reg.sessionId);
+      return {
+        id: reg.sessionId,
+        provider: 'claude' as const,
+        cwd: liveInfo?.cwd ?? reg.cwd,
+        name: liveInfo?.name ?? reg.name,
+        preview: reg.preview,
+        status: this.activeTurns.has(reg.sessionId) ? 'running' : 'idle',
+        createdAt: reg.createdAt,
+        updatedAt: liveInfo?.updatedAt ?? reg.updatedAt,
+        source: 'wingman' as const,
+        tags: reg.tags,
+        hostId,
+        hostName,
+        live: liveInfo?.live ?? false,
+        pid: liveInfo?.pid,
+        liveStatus: liveInfo?.status ?? liveInfo?.state,
+        kind: liveInfo?.kind,
+      };
+    });
 
     if (!discoveryEnabled()) {
-      return wingmanSessions;
+      // Still include live sessions that aren't in wingman registry
+      const wingmanIds = new Set(wingmanSessions.map((s) => s.id));
+      for (const ls of liveSessions) {
+        if (!wingmanIds.has(ls.sessionId)) {
+          wingmanSessions.push(this.liveSessionToSummary(ls, hostId, hostName));
+        }
+      }
+      return this.sortAndFilterByState(wingmanSessions, stateFilter);
     }
 
     const discovered = await this.discoverViaSdk();
 
     const wingmanIds = new Set(wingmanSessions.map((s) => s.id));
     const merged = [...wingmanSessions];
+    
     for (const ds of discovered) {
       if (!wingmanIds.has(ds.id)) {
-        merged.push({ ...ds, hostId, hostName });
+        // Merge liveness info into discovered session
+        const liveInfo = liveSessionMap.get(ds.id);
+        merged.push({
+          ...ds,
+          hostId,
+          hostName,
+          live: liveInfo?.live ?? false,
+          pid: liveInfo?.pid,
+          liveStatus: liveInfo?.status ?? liveInfo?.state,
+          kind: liveInfo?.kind,
+        });
+        wingmanIds.add(ds.id);
       }
     }
 
-    merged.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-    return merged;
+    // Add any live sessions not yet in merged
+    for (const ls of liveSessions) {
+      if (!wingmanIds.has(ls.sessionId)) {
+        merged.push(this.liveSessionToSummary(ls, hostId, hostName));
+      }
+    }
+
+    return this.sortAndFilterByState(merged, stateFilter);
+  }
+  
+  /**
+   * Convert a ClaudeLiveSession to SessionSummary.
+   */
+  private liveSessionToSummary(
+    ls: ClaudeLiveSession,
+    hostId: string | undefined,
+    hostName: string | undefined,
+  ): SessionSummary {
+    return {
+      id: ls.sessionId,
+      provider: 'claude' as const,
+      cwd: ls.cwd,
+      name: ls.name,
+      preview: undefined,
+      status: this.activeTurns.has(ls.sessionId) ? 'running' : 'idle',
+      createdAt: undefined,
+      updatedAt: ls.updatedAt,
+      source: 'discovered' as const,
+      hostId,
+      hostName,
+      live: ls.live ?? false,
+      pid: ls.pid,
+      liveStatus: ls.status ?? ls.state,
+      kind: ls.kind,
+    };
+  }
+
+  /**
+   * Sort sessions with live first, then by updatedAt, and filter by state.
+   */
+  private sortAndFilterByState(
+    sessions: SessionSummary[],
+    stateFilter: 'live' | 'past' | 'all',
+  ): SessionSummary[] {
+    // Filter by state
+    let filtered = sessions;
+    if (stateFilter === 'live') {
+      filtered = sessions.filter((s) => s.live === true);
+    } else if (stateFilter === 'past') {
+      filtered = sessions.filter((s) => s.live !== true);
+    }
+
+    // Sort: live sessions first, then by updatedAt descending
+    filtered.sort((a, b) => {
+      // Live sessions first
+      if (a.live && !b.live) return -1;
+      if (!a.live && b.live) return 1;
+      // Then by updatedAt descending
+      return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+    });
+
+    return filtered;
   }
 
   async getSession(sessionId: string): Promise<SessionDetail | null> {
@@ -418,6 +525,18 @@ export class ClaudeProvider implements SessionProvider {
     }
   }
 
+  /**
+   * Send a message to a Claude session.
+   * 
+   * For LIVE sessions (pid running):
+   * - Uses cross-session inbox injection via socket/pipe
+   * - Message appears in the existing interactive session
+   * - Does NOT fork the session
+   * 
+   * For PAST sessions (pid not running):
+   * - Uses SDK resume to start a new background turn
+   * - WARNING: If the session is also open interactively elsewhere, this will fork it
+   */
   async sendMessage(sessionId: string, text: string): Promise<SendMessageResult> {
     if (useMock()) {
       const mock = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
@@ -444,6 +563,33 @@ export class ClaudeProvider implements SessionProvider {
       throw new Error(`Unknown mock session: ${sessionId}`);
     }
 
+    // Check if session is live - try inbox injection first
+    try {
+      const liveSessions = await listClaudeLiveSessions();
+      const liveSession = liveSessions.find((s) => s.sessionId === sessionId);
+      
+      if (liveSession?.live && liveSession.messagingSocketPath) {
+        // Try inbox injection for live session
+        const inboxResult = await sendToClaudeInbox(sessionId, text);
+        if (inboxResult.delivered) {
+          return {
+            sessionId,
+            turnId: undefined, // Inbox injection doesn't create a tracked turn
+            status: 'delivered_via_inbox',
+          };
+        }
+        // Inbox failed, fall back to SDK resume
+        console.warn(
+          `[claude] Inbox delivery failed for live session ${sessionId}: ${inboxResult.error}. ` +
+          `Falling back to SDK resume (may fork if session is open interactively).`
+        );
+      }
+    } catch (err) {
+      // Live session check failed, continue with SDK resume
+      console.warn(`[claude] Live session check failed: ${err instanceof Error ? err.message : err}`);
+    }
+
+    // Fall back to SDK resume for past sessions or when inbox fails
     const registry = loadRegistry();
     const session = registry.sessions.find((s) => s.sessionId === sessionId);
     const turnId = `turn_${randomUUID().slice(0, 8)}`;

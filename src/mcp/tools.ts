@@ -4,12 +4,21 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderRegistry, ProviderName } from '../providers/index.js';
 import type { Transcript, TranscriptItem } from '../providers/types.js';
+import { listClaudeLiveSessions, sendToClaudeSession } from '../claude-inbox.js';
 
 export const ProviderSchema = z.enum(['codex', 'claude', 'muse']);
 export const ExportFormatSchema = z.enum(['markdown', 'json']);
+export const SessionStateFilterSchema = z.enum(['live', 'past', 'all']);
 
 export const ListSessionsSchema = z.object({
   provider: ProviderSchema.optional(),
+  /**
+   * Filter by session state:
+   * - 'live': Only sessions with a running pid (active sessions)
+   * - 'past': Only sessions with stale registry (past/resumable sessions)
+   * - 'all': All sessions, with live sorted first (default)
+   */
+  state: SessionStateFilterSchema.optional(),
 });
 
 export const ReadTranscriptSchema = z.object({
@@ -85,6 +94,13 @@ export const ExportTranscriptSchema = z.object({
   limit: z.number().int().positive().max(500).optional(),
 });
 
+export const ListClaudeLiveSessionsSchema = z.object({});
+
+export const SendToClaudeSessionSchema = z.object({
+  target: z.string().min(1).describe('Session target: sessionId, name, or pid'),
+  text: z.string().min(1).describe('Message text to send'),
+});
+
 function textResult(data: unknown) {
   return {
     content: [
@@ -111,10 +127,14 @@ export function createToolHandlers(providers: ProviderRegistry) {
         const names: ProviderName[] = args.provider
           ? [args.provider]
           : ['codex', 'claude', 'muse'];
+        const stateFilter = args.state ?? 'all';
         const sessions = [];
         for (const name of names) {
           try {
-            const list = await providers.get(name).listSessions();
+            // Claude provider supports state filter
+            const list = name === 'claude'
+              ? await (providers.get(name) as unknown as { listSessions: (opts?: { state?: string }) => Promise<unknown[]> }).listSessions({ state: stateFilter })
+              : await providers.get(name).listSessions();
             sessions.push(...list);
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
@@ -150,7 +170,26 @@ export function createToolHandlers(providers: ProviderRegistry) {
             }
           }
         }
-        return textResult({ sessions });
+        
+        // Apply state filter at the end, after all sources are merged
+        let filteredSessions = sessions;
+        if (stateFilter === 'live') {
+          filteredSessions = sessions.filter((s) => (s as { live?: boolean }).live === true);
+        } else if (stateFilter === 'past') {
+          filteredSessions = sessions.filter((s) => (s as { live?: boolean }).live !== true);
+        }
+        
+        // Sort: live sessions first, then by updatedAt descending
+        filteredSessions.sort((a, b) => {
+          const aLive = (a as { live?: boolean }).live ?? false;
+          const bLive = (b as { live?: boolean }).live ?? false;
+          if (aLive && !bLive) return -1;
+          if (!aLive && bLive) return 1;
+          return ((b as { updatedAt?: number }).updatedAt ?? 0) - 
+                 ((a as { updatedAt?: number }).updatedAt ?? 0);
+        });
+        
+        return textResult({ sessions: filteredSessions });
       } catch (err) {
         return errorResult(err);
       }
@@ -327,6 +366,24 @@ export function createToolHandlers(providers: ProviderRegistry) {
           path: filePath,
           content,
         });
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+
+    async list_claude_live_sessions(_args: z.infer<typeof ListClaudeLiveSessionsSchema>) {
+      try {
+        const sessions = await listClaudeLiveSessions();
+        return textResult({ sessions });
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+
+    async send_to_claude_session(args: z.infer<typeof SendToClaudeSessionSchema>) {
+      try {
+        const result = await sendToClaudeSession(args.target, args.text);
+        return textResult(result);
       } catch (err) {
         return errorResult(err);
       }

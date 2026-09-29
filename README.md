@@ -1,6 +1,8 @@
 # Wingman
 
-**Your coding agent's wingman** — a TypeScript MCP bridge + pair CLI so Grok Bot, Cursor, Muse Code (and other MCP hosts) can talk to live Codex and Claude Code sessions on your machine while you still see the session.
+**Your AI supervisor's bridge to local coding agents** - a TypeScript MCP server that lets Grok Bot (and other MCP hosts) act as a supervisor/manager over Codex and Claude Code sessions running on your machine.
+
+The supervisor can list workers, read their progress, assign tasks, handle escalations, and coordinate multi-worker efforts - while you still see sessions locally.
 
 Dual-provider: Codex (app-server) + Claude Code (Agent SDK).
 
@@ -16,9 +18,14 @@ See **[ROADMAP.md](ROADMAP.md)** for positioning, backlog, and non-goals.
 
 ## Why Wingman?
 
-Cloud assistants are great copilots — until they need to *touch* the session you're already in. Wingman sits on your machine, pairs with a one-command CLI, and exposes a small MCP surface so a remote host can list threads, read transcripts, send messages, and interrupt turns — without hijacking your TTY or pretending to be the agent UI.
+Cloud AI assistants like Grok Bot are powerful supervisors, but they cannot directly reach coding agents running on your local machine. Wingman bridges this gap, letting a remote supervisor:
 
-Think of it as a radio link between the bot in the cloud and the agent on your desk. You're still flying; Wingman just rides shotgun.
+- **Monitor workers**: List all active sessions, check their status, read transcripts
+- **Assign tasks**: Create sessions with goals, working directories, and initial prompts
+- **Coordinate work**: Wait for turns to complete, handle approvals, steer in-flight work
+- **Stay safe**: Read-only access to sessions owned by other apps (like ChatGPT desktop)
+
+Think of it as the management layer between the supervisor in the cloud and the workers on your desk. You still see everything locally; Wingman provides the coordination.
 
 ## Quickstart
 
@@ -92,11 +99,18 @@ Different MCP hosts have different configuration methods. See the detailed guide
 
 ### Real provider modes
 
-**Codex** — Requires `codex` on `PATH`. Wingman speaks **Codex app-server** JSON-RPC (`codex app-server` over stdio).
+**Codex** - Requires `codex` on `PATH`. Wingman speaks **Codex app-server** JSON-RPC.
 
 ```bash
 npm run pair   # unset CODEX_MOCK
 ```
+
+**Shared server mode** (attach to existing app-server):
+```bash
+export WINGMAN_CODEX_SOCKET="$HOME/.codex/app-server-control/app-server-control.sock"
+npm run pair
+```
+This connects to the same app-server the ChatGPT desktop app uses, so messages appear live in both interfaces. See [docs/codex-shared-server.md](docs/codex-shared-server.md) for details.
 
 **Claude Code** — Uses the `@anthropic-ai/claude-agent-sdk`. Sessions are created and resumed through the SDK.
 
@@ -117,6 +131,7 @@ Docs: [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [Claude A
 - Resume discovered sessions by ID — the SDK reads session state from `~/.claude/projects/`
 - Send messages to sessions asynchronously (returns `accepted` quickly; turn runs in background)
 - Check session status (idle vs running) via `get_session` or `list_sessions`
+- **Send messages to running interactive Claude Code sessions** via their per-session inbox sockets (`list_claude_live_sessions` + `send_to_claude_session`)
 - Bearer-protect the MCP HTTP endpoint
 - Create / list / read / message / interrupt sessions (real or mock) for both providers
 - Keep you in the loop — the session stays visible on your machine
@@ -157,7 +172,7 @@ flowchart LR
 
 | Tool | Args | Notes |
 |------|------|--------|
-| `list_sessions` | `provider?`: `codex` \| `claude` | Lists sessions for one or both providers (includes `status`, `source`, `tags`, `hostId`, `hostName`) |
+| `list_sessions` | `provider?`, `state?` | Lists sessions with optional `state` filter: `live` \| `past` \| `all` (default). Claude sessions include `live`, `pid`, `liveStatus`, `kind` |
 | `get_session` | `provider`, `session_id` | Get detailed session info including status (`idle` / `running`), tags, and host identity |
 | `read_transcript` | `provider`, `session_id`, `limit?` | Recent messages (newest at end) |
 | `send_message` | `provider`, `session_id`, `text` | Codex: `turn/start`; Claude: returns `accepted` quickly, turn runs async |
@@ -169,6 +184,8 @@ flowchart LR
 | `resolve_approval` | `provider`, `session_id`, `approval_id`, `decision` | Resolve approval (Codex); Claude returns unsupported error |
 | `set_session_meta` | `provider`, `session_id`, `name?`, `tags?` | Set session name/tags for easier discovery (Wingman-owned sessions) |
 | `export_transcript` | `provider`, `session_id`, `format`, `limit?` | Export transcript as `markdown` \| `json`; returns content + writes to `~/.wingman/exports/` |
+| `list_claude_live_sessions` | (none) | List running Claude Code sessions with inbox socket status |
+| `send_to_claude_session` | `target`, `text` | Send message to running Claude Code session via inbox socket (appears live) |
 
 ### create_session behavior
 
@@ -199,7 +216,9 @@ npx wingman-mcp
 
 ### send_message behavior
 
-For **Claude sessions**, `send_message` returns immediately with `{ status: "accepted", turnId }` while the SDK query runs in the background. Use `get_session` or `read_transcript` to observe progress. This prevents MCP HTTP timeouts during long model turns.
+For **live Claude sessions** (pid running), `send_message` uses inbox injection via the session's cross-session socket. The message appears in the existing interactive session without forking. Returns `{ status: "delivered_via_inbox" }`.
+
+For **past Claude sessions** (pid not running) or when inbox fails, `send_message` falls back to SDK resume. Returns `{ status: "accepted", turnId }` while the turn runs in background. **Warning**: Resuming a session also open interactively elsewhere will fork it.
 
 For **Codex sessions**, `send_message` blocks until `turn/start` returns (typically fast), then returns `{ status: "completed" | "inProgress" }`.
 
@@ -346,6 +365,10 @@ Sessions returned by `list_sessions` include:
 | `tags` | `string[]?` | User-set tags for categorization/filtering |
 | `gitBranch` | `string?` | Git branch at end of session (discovered) |
 | `tag` | `string?` | Legacy single tag (discovered sessions only) |
+| `live` | `boolean?` | Whether session is live (pid running) — Claude only |
+| `pid` | `number?` | Process ID of live session — Claude only |
+| `liveStatus` | `string?` | Status from registry (busy/idle/blocked) — live Claude only |
+| `kind` | `string?` | Session kind (interactive/background) — Claude only |
 
 ### Claude session storage
 

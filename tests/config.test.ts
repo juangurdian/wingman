@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import {
   resolveClaudeSendTimeoutMs,
   resolveWaitTurnTimeoutMs,
@@ -8,6 +10,9 @@ import {
   isCodexModelApiOnly,
   resolveHostId,
   resolveHostName,
+  resolveCodexSocket,
+  defaultCodexSocketPath,
+  useCodexAttachMode,
   CLAUDE_SEND_TIMEOUT_MS_DEFAULT,
   WINGMAN_WAIT_TURN_TIMEOUT_MS_DEFAULT,
   WINGMAN_WAIT_TURN_POLL_MS_DEFAULT,
@@ -225,5 +230,49 @@ describe('Host identity configuration', () => {
     vi.stubEnv('WINGMAN_HOST_NAME', '  Pearlwolf Windows  ');
     expect(resolveHostId()).toBe('pearlwolf');
     expect(resolveHostName()).toBe('Pearlwolf Windows');
+  });
+});
+
+describe('Codex socket configuration (shared server mode)', () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('resolveCodexSocket returns undefined when env not set', () => {
+    expect(resolveCodexSocket()).toBeUndefined();
+  });
+
+  it('resolveCodexSocket returns socket path when WINGMAN_CODEX_SOCKET is set', () => {
+    vi.stubEnv('WINGMAN_CODEX_SOCKET', '/path/to/socket.sock');
+    expect(resolveCodexSocket()).toBe('/path/to/socket.sock');
+  });
+
+  it('resolveCodexSocket trims whitespace', () => {
+    vi.stubEnv('WINGMAN_CODEX_SOCKET', '  /path/to/socket.sock  ');
+    expect(resolveCodexSocket()).toBe('/path/to/socket.sock');
+  });
+
+  it('defaultCodexSocketPath returns expected path', () => {
+    const expected = join(homedir(), '.codex', 'app-server-control', 'app-server-control.sock');
+    expect(defaultCodexSocketPath()).toBe(expected);
+  });
+
+  it('defaultCodexSocketPath uses CODEX_HOME when set', () => {
+    vi.stubEnv('CODEX_HOME', '/custom/codex/home');
+    const expected = join('/custom/codex/home', 'app-server-control', 'app-server-control.sock');
+    expect(defaultCodexSocketPath()).toBe(expected);
+  });
+
+  it('useCodexAttachMode returns false when socket not set', () => {
+    expect(useCodexAttachMode()).toBe(false);
+  });
+
+  it('useCodexAttachMode returns true when WINGMAN_CODEX_SOCKET is set', () => {
+    vi.stubEnv('WINGMAN_CODEX_SOCKET', '/path/to/socket.sock');
+    expect(useCodexAttachMode()).toBe(true);
   });
 });
