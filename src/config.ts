@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -170,20 +170,9 @@ export function isCodexModelApiOnly(model: string): boolean {
 // Codex socket configuration (shared server mode)
 
 /**
- * Resolve the Codex app-server socket path.
- * When set, Wingman connects to an existing app-server instead of spawning its own.
- * 
- * Priority: WINGMAN_CODEX_SOCKET env > undefined (spawn mode)
- */
-export function resolveCodexSocket(): string | undefined {
-  const env = process.env.WINGMAN_CODEX_SOCKET?.trim();
-  if (env) return env;
-  return undefined;
-}
-
-/**
  * Default socket path for the Codex app-server control socket.
- * This is where the ChatGPT desktop app and `codex app-server daemon` listen.
+ * Only exists when `codex app-server daemon start` is running.
+ * Note: The ChatGPT desktop app does NOT use daemon mode; it spawns stdio-based servers.
  */
 export function defaultCodexSocketPath(): string {
   const codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), '.codex');
@@ -191,10 +180,45 @@ export function defaultCodexSocketPath(): string {
 }
 
 /**
- * Check if we should use attach mode (connect to existing app-server).
+ * Resolve the Codex app-server socket path.
+ * 
+ * Values:
+ * - undefined (default): spawn mode
+ * - "auto": auto-detect the control socket, fall back to spawn if not found
+ * - path: explicit socket path
+ * 
+ * Priority: WINGMAN_CODEX_SOCKET env > undefined (spawn mode)
+ */
+export function resolveCodexSocket(): string | undefined {
+  const env = process.env.WINGMAN_CODEX_SOCKET?.trim();
+  if (!env) return undefined;
+  
+  // "auto" means try the default path if it exists
+  if (env.toLowerCase() === 'auto') {
+    return defaultCodexSocketPath();
+  }
+  
+  return env;
+}
+
+/**
+ * Check if attach mode is requested (not whether it will succeed).
  */
 export function useCodexAttachMode(): boolean {
-  return !!resolveCodexSocket();
+  const env = process.env.WINGMAN_CODEX_SOCKET?.trim();
+  return !!env;
+}
+
+/**
+ * Check if the Codex control socket exists (daemon is running).
+ */
+export function codexSocketExists(socketPath?: string): boolean {
+  const path = socketPath || defaultCodexSocketPath();
+  try {
+    return existsSync(path);
+  } catch {
+    return false;
+  }
 }
 
 // Host identity configuration

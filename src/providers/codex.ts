@@ -51,6 +51,8 @@ import {
   resolveHostName,
   resolveCodexSocket,
   useCodexAttachMode,
+  codexSocketExists,
+  defaultCodexSocketPath,
 } from '../config.js';
 
 type JsonRpcId = number;
@@ -106,6 +108,8 @@ export class CodexProvider implements SessionProvider {
   // Attach mode (WebSocket over Unix socket)
   private ws: WebSocket | null = null;
   private connectionMode: ConnectionMode = 'spawn';
+  private attachModeRequested = false;
+  private attachModeFallbackReason: string | null = null;
   
   // Shared state
   private nextId = 1;
@@ -119,7 +123,24 @@ export class CodexProvider implements SessionProvider {
 
   constructor() {
     // Determine connection mode based on environment
-    this.connectionMode = useCodexAttachMode() ? 'attach' : 'spawn';
+    this.attachModeRequested = useCodexAttachMode();
+    
+    if (this.attachModeRequested) {
+      const socketPath = resolveCodexSocket();
+      if (socketPath && codexSocketExists(socketPath)) {
+        this.connectionMode = 'attach';
+      } else {
+        // Fall back to spawn mode with a clear reason
+        this.connectionMode = 'spawn';
+        const defaultPath = defaultCodexSocketPath();
+        this.attachModeFallbackReason = 
+          `Attach mode requested but control socket not found at ${socketPath || defaultPath}. ` +
+          `The ChatGPT desktop app does not use daemon mode. ` +
+          `To use attach mode, run: codex app-server daemon start`;
+        console.warn(`[wingman] ${this.attachModeFallbackReason}`);
+        console.warn(`[wingman] Falling back to spawn mode (spawning own app-server).`);
+      }
+    }
     
     if (useMock()) {
       // Seed a couple of mock sessions for easy pair demos.
@@ -133,7 +154,7 @@ export class CodexProvider implements SessionProvider {
   
   /**
    * Check if we own a thread (safe to write to it).
-   * In attach mode, we only own threads we created or explicitly resumed.
+   * We only own threads we created or explicitly resumed.
    */
   isThreadOwned(threadId: string): boolean {
     return this.ownedThreads.has(threadId);
@@ -144,6 +165,13 @@ export class CodexProvider implements SessionProvider {
    */
   getConnectionMode(): ConnectionMode {
     return this.connectionMode;
+  }
+  
+  /**
+   * Get the reason attach mode fell back to spawn mode, if any.
+   */
+  getAttachModeFallbackReason(): string | null {
+    return this.attachModeFallbackReason;
   }
 
   private seedMock(opts?: { cwd?: string; name?: string; preview?: string; tags?: string[] }): MockSession {
@@ -280,11 +308,11 @@ export class CodexProvider implements SessionProvider {
 
     await this.ensureConnected();
     
-    // In attach mode, prefer read-only thread/read to avoid taking ownership.
-    // In spawn mode, use thread/resume for consistency with existing behavior.
+    // Prefer read-only thread/read to avoid taking ownership (both modes).
+    // This is safe because read_transcript should be non-destructive.
     let thread: Record<string, unknown>;
     
-    if (this.connectionMode === 'attach' && !this.ownedThreads.has(sessionId)) {
+    if (!this.ownedThreads.has(sessionId)) {
       // Read-only: use thread/read without resuming
       try {
         const read = (await this.request('thread/read', {
@@ -304,17 +332,25 @@ export class CodexProvider implements SessionProvider {
           // Reconstruct thread-like structure from turns
           thread = { turns: turnsResult.data ?? [] };
         } catch {
-          throw err; // Re-throw original error
+          // If that also fails, fall back to thread/resume as last resort
+          try {
+            const resumed = (await this.request('thread/resume', { threadId: sessionId })) as {
+              thread?: Record<string, unknown>;
+            };
+            thread = resumed.thread ?? {};
+            this.ownedThreads.add(sessionId);
+          } catch {
+            throw err; // Re-throw original error
+          }
         }
       }
     } else {
-      // Spawn mode or owned thread: use thread/resume for full access
+      // Already own this thread, safe to use resume for full access
       try {
         const resumed = (await this.request('thread/resume', { threadId: sessionId })) as {
           thread?: Record<string, unknown>;
         };
         thread = resumed.thread ?? {};
-        this.ownedThreads.add(sessionId);
       } catch {
         // Fall back to thread/read
         const read = (await this.request('thread/read', {
@@ -376,15 +412,15 @@ export class CodexProvider implements SessionProvider {
 
     await this.ensureConnected();
     
-    // In attach mode, warn if thread may be owned by another client
-    if (this.connectionMode === 'attach' && !this.ownedThreads.has(sessionId)) {
-      // Check if thread is loaded (possibly by another client)
+    // Warn if thread is not owned by Wingman (may cause conflicts in both modes)
+    if (!this.ownedThreads.has(sessionId) && !opts?.force) {
+      // Check if thread is loaded (possibly by another client or the desktop app)
       try {
         const loadedResult = (await this.request('thread/loaded/list', {})) as { data?: string[] };
         const loadedThreads = loadedResult.data ?? [];
-        if (loadedThreads.includes(sessionId) && !opts?.force) {
+        if (loadedThreads.includes(sessionId)) {
           console.warn(
-            `[wingman] Warning: Thread ${sessionId} appears to be loaded by another client. ` +
+            `[wingman] Warning: Thread ${sessionId} is already loaded (possibly by another client). ` +
             `Sending messages may cause conflicts. Use force: true to override.`
           );
         }
@@ -822,7 +858,10 @@ export class CodexProvider implements SessionProvider {
   
   /**
    * Connect to an existing app-server via Unix socket WebSocket.
-   * This is the attach mode for sharing sessions with the ChatGPT desktop app.
+   * This is the attach mode for sharing sessions with the Codex daemon.
+   * 
+   * Note: The ChatGPT desktop app does NOT use daemon mode, so this only works
+   * when `codex app-server daemon start` is running separately.
    */
   private async connectToSocket(): Promise<void> {
     const socketPath = resolveCodexSocket();
@@ -832,9 +871,14 @@ export class CodexProvider implements SessionProvider {
     
     if (!existsSync(socketPath)) {
       throw new Error(
-        `Codex app-server socket not found at ${socketPath}. ` +
-        `Ensure the ChatGPT desktop app or \`codex app-server daemon\` is running, ` +
-        `or unset WINGMAN_CODEX_SOCKET to use spawn mode.`
+        `Codex app-server control socket not found at ${socketPath}.\n` +
+        `\n` +
+        `The ChatGPT desktop app spawns its own stdio-based app-servers and does NOT\n` +
+        `create this socket. To use attach mode, start the daemon manually:\n` +
+        `\n` +
+        `    codex app-server daemon start\n` +
+        `\n` +
+        `Or unset WINGMAN_CODEX_SOCKET to use spawn mode (Wingman spawns its own server).`
       );
     }
     

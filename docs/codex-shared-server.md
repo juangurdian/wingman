@@ -1,159 +1,136 @@
 # Codex Shared App-Server Investigation
 
-This document describes how Wingman can connect to an existing Codex app-server process (such as the one run by the ChatGPT desktop app) instead of spawning its own.
+This document describes the findings from investigating whether Wingman can connect to an existing Codex app-server process.
 
 ## Summary
 
-**Yes, attaching to a running app-server is possible.** The Codex app-server exposes a Unix domain socket that accepts multiple concurrent WebSocket connections. External clients can connect, list threads, read transcripts, and send messages - all while the desktop app remains connected.
+**Partial support.** The Codex app-server protocol does support external clients connecting via a Unix control socket, but the **ChatGPT desktop app does NOT use the control-socket daemon mode**. It spawns its own stdio-based app-servers as child processes, which cannot be attached to externally.
 
-## Architecture
+Attach mode works only when:
+1. A user manually starts `codex app-server daemon start`, OR
+2. A future version of the ChatGPT desktop app adopts daemon mode
+
+## Findings from Real Mac Testing (codex-cli 0.152.1)
+
+### What Exists
+
+| Path | Purpose | Usable by Wingman? |
+|------|---------|-------------------|
+| `~/.codex/ipc/ipc.sock` | IDE context (VS Code/Cursor extension communication) | **No** - different protocol, no thread access |
+| `~/.codex/app-server-control/app-server-control.sock` | App-server control plane | **Yes, when it exists** - but NOT created by ChatGPT app |
+
+### How the ChatGPT Desktop App Works
+
+The ChatGPT desktop app spawns **multiple stdio-based app-servers** as child processes:
 
 ```
-ChatGPT Desktop App
-        |
-        v
-   app-server daemon (process)
-        |
-        +---> Unix socket: ~/.codex/app-server-control/app-server-control.sock
-        |           |
-        |           +---> WebSocket connection (Desktop app)
-        |           +---> WebSocket connection (Wingman - attach mode)
-        |
-        +---> ~/.codex/sessions/ (thread storage)
+/Applications/ChatGPT.app/Contents/Resources/codex app-server --listen stdio://
+/Applications/ChatGPT.app/Contents/Resources/codex -c features.code_mode_host=true app-server --analytics-default-enabled ...
 ```
 
-## Protocol Details
+- Each app-server is a separate child process with stdio transport
+- There is **no shared control socket** these can attach to
+- Wingman cannot connect to these stdio-based servers externally
 
-### Socket Location
+### The IPC Socket (`~/.codex/ipc/ipc.sock`)
 
-The control socket is at:
-```
-$CODEX_HOME/app-server-control/app-server-control.sock
-```
+This socket is for IDE context communication only:
+- Protocol: JSON frames with length prefix (not WebSocket)
+- Purpose: Fetching open tabs, active file, and selection from VS Code/Cursor
+- Method: `ide-context` requests only
+- **Cannot**: list threads, send messages, read transcripts, or control turns
 
-Where `$CODEX_HOME` defaults to `~/.codex`.
+## Control Socket Daemon Mode
 
-### Connection Protocol
+The app-server daemon mode DOES create a shared control socket:
 
-1. **Connect** to the Unix socket
-2. **HTTP Upgrade** handshake to WebSocket
-3. **JSON-RPC messages** (one per WebSocket text frame, without `"jsonrpc":"2.0"` header)
+```bash
+# Start the daemon (creates the control socket)
+codex app-server daemon start
 
-### Initialization Handshake
+# Enable remote control for mobile/web access
+codex app-server daemon enable-remote-control
 
-After WebSocket upgrade, clients must:
-
-1. Send `initialize` request:
-```json
-{
-  "method": "initialize",
-  "id": 1,
-  "params": {
-    "clientInfo": {
-      "name": "wingman",
-      "title": "Wingman MCP Bridge",
-      "version": "0.1.0"
-    },
-    "capabilities": {
-      "experimentalApi": true
-    }
-  }
-}
+# Check status
+codex app-server daemon version
 ```
 
-2. Receive `initialize` response (contains server info)
+When running:
+- Creates `~/.codex/app-server-control/app-server-control.sock`
+- Accepts multiple WebSocket connections
+- Supports full thread/turn/message protocol
 
-3. Send `initialized` notification:
-```json
-{
-  "method": "initialized",
-  "params": {}
-}
-```
+### Daemon Protocol
 
-### Read-Only Operations
+When the daemon is running, external clients can connect:
 
-These operations do NOT resume/load a thread:
+1. **Connect** to the Unix socket via WebSocket HTTP Upgrade
+2. **Initialize** with JSON-RPC handshake
+3. **Use full API**: `thread/list`, `thread/read`, `turn/start`, etc.
 
-| Method | Description |
-|--------|-------------|
-| `thread/list` | Page through stored threads |
-| `thread/read` | Read a stored thread by ID |
-| `thread/turns/list` | Page through turn history |
-| `thread/items/list` | Page through items |
-| `thread/loaded/list` | List currently loaded thread IDs |
+Read-only operations (safe for non-owned threads):
+- `thread/list` - list all threads
+- `thread/read` - read thread without resuming
+- `thread/turns/list` - page through turn history
+- `thread/loaded/list` - see which threads are currently loaded
 
-### Write Operations
-
-These operations DO affect thread state:
-
-| Method | Description | Considerations |
-|--------|-------------|----------------|
-| `thread/resume` | Load and subscribe to thread | Creates ownership |
-| `turn/start` | Send user input | Requires resumed thread |
-| `turn/interrupt` | Cancel active turn | Requires active turn |
-
-## Thread Ownership
-
-Important constraint from the protocol:
-
-> Only one app-server process can hold a paginated thread open for writing at a time. If another process already owns the thread, `thread/resume`, `thread/archive`, and `thread/delete` fail with JSON-RPC error `-32600`.
-
-This means:
-- Multiple clients CAN connect to the same app-server
-- Multiple clients CAN read the same thread
-- Only ONE client can have a thread resumed for writing
-
-## Implementation in Wingman
+## Wingman Implementation
 
 ### Attach Mode
 
-Set `WINGMAN_CODEX_SOCKET` to the socket path:
+Set `WINGMAN_CODEX_SOCKET` to connect to an existing daemon:
+
 ```bash
+# Point to the control socket (auto-detected if not set)
 export WINGMAN_CODEX_SOCKET="$HOME/.codex/app-server-control/app-server-control.sock"
+npm run pair
 ```
 
-Wingman will:
-1. Connect to the existing socket instead of spawning `codex app-server`
-2. Use read-only operations by default (`thread/list`, `thread/read`)
-3. Warn when attempting write operations on threads it does not own
+If the socket doesn't exist, Wingman falls back to spawn mode with a clear message.
 
-### Read-Only Transcript Access
+### Auto-Detection
 
-When reading transcripts for threads Wingman does not own:
-- Uses `thread/read` with `includeTurns: true` to read without resuming
-- Falls back to `thread/turns/list` + `thread/items/list` for paginated threads
-- Never calls `thread/resume` unless explicitly writing
+When `WINGMAN_CODEX_SOCKET` is set to `auto`:
+1. Check if `~/.codex/app-server-control/app-server-control.sock` exists
+2. If yes: connect to it (attach mode)
+3. If no: spawn own app-server (spawn mode) with a note explaining why
 
-### Safe Send Message
+### Read-Only Safety (Both Modes)
 
-When sending messages:
-- If thread appears loaded elsewhere, warn and require `force: true`
-- Check `thread/loaded/list` to see if thread is active
-- Use `thread.status` from `thread/read` to detect active turns
+Wingman now uses read-only operations by default in **both** modes:
+- `read_transcript` uses `thread/read` instead of `thread/resume` when possible
+- Tracks which threads Wingman owns (created or resumed)
+- Warns when `send_message` targets a non-owned thread
+- Supports `force` flag to override warnings
 
-### Timeout Configuration
+## How to Share Sessions with Codex CLI/TUI
 
-The `thread/list` operation can be slow on large session sets. Configuration:
-- `CODEX_RPC_TIMEOUT_MS` controls the JSON-RPC timeout (default: 60000ms)
-- Retry with exponential backoff on timeout
-- Return partial results when available
+To share sessions between Wingman and the Codex CLI/TUI:
 
-## What This Enables
+```bash
+# Terminal 1: Start the daemon
+codex app-server daemon start
 
-1. **Live visibility**: Messages sent through Wingman appear in the desktop app
-2. **No duplicate processes**: Single app-server serves both interfaces
-3. **Read without interference**: Supervisor can monitor without affecting active work
-4. **Safe handoff**: Clear ownership model prevents conflicts
+# Terminal 2: Use Codex TUI (connects to daemon automatically)
+codex
+
+# Terminal 3: Start Wingman in attach mode
+export WINGMAN_CODEX_SOCKET="$HOME/.codex/app-server-control/app-server-control.sock"
+npm run pair
+```
+
+Both the TUI and Wingman will see the same threads.
+
+**Note**: The ChatGPT desktop app does NOT use this daemon, so its threads remain inaccessible to Wingman.
 
 ## What This Does NOT Enable
 
-1. **TTY hijack**: Cannot inject keystrokes into terminal processes
-2. **Interrupt foreign turns**: Can only interrupt turns Wingman started
-3. **Override desktop app**: Desktop app retains priority for its threads
+1. **Sharing with ChatGPT desktop app** - The app uses stdio-based servers, not the daemon
+2. **Attaching to arbitrary processes** - Only the daemon socket is supported
+3. **IDE context access** - The IPC socket uses a different protocol
 
-## References
+## Protocol References
 
 - [Codex app-server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
 - [Codex app-server-daemon README](https://github.com/openai/codex/blob/main/codex-rs/app-server-daemon/README.md)
-- [Codex app-server-client](https://github.com/openai/codex/tree/main/codex-rs/app-server-client)
+- [Codex IDE context IPC](https://github.com/openai/codex/blob/main/codex-rs/tui/src/ide_context/ipc.rs)
