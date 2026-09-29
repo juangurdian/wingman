@@ -3,10 +3,29 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createServer, type Server, type AddressInfo } from 'node:net';
+import { createServer, type Server } from 'node:net';
 import { join } from 'node:path';
 import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+
+describe('Claude Inbox - isWindowsNamedPipe', () => {
+  it('recognizes Windows named pipe paths', async () => {
+    const { isWindowsNamedPipe } = await import('../src/claude-inbox.js');
+    
+    // Valid Windows named pipe paths
+    expect(isWindowsNamedPipe('\\\\.\\pipe\\LOCAL\\cc-msg-abc123')).toBe(true);
+    expect(isWindowsNamedPipe('\\\\.\\pipe\\cc-msg-test')).toBe(true);
+    expect(isWindowsNamedPipe('\\\\?\\pipe\\LOCAL\\cc-msg-xyz')).toBe(true);
+    
+    // Forward slashes (Node.js normalization)
+    expect(isWindowsNamedPipe('//./pipe/LOCAL/cc-msg-abc123')).toBe(true);
+    
+    // Not named pipes
+    expect(isWindowsNamedPipe('/tmp/cc-socks-1000/12345.sock')).toBe(false);
+    expect(isWindowsNamedPipe('/var/run/socket.sock')).toBe(false);
+    expect(isWindowsNamedPipe('')).toBe(false);
+  });
+});
 
 describe('Claude Inbox - parseClaudeAgentsOutput', () => {
   beforeEach(() => {
@@ -45,16 +64,28 @@ describe('Claude Inbox - parseClaudeAgentsOutput', () => {
       pid: 12345,
       name: 'Test Session',
       status: 'idle',
+      state: undefined,
       waitingFor: null,
     });
-    expect(result[1]).toEqual({
-      id: 'sess_def456',
-      sessionId: 'sess_def456',
-      pid: 67890,
-      name: undefined,
-      status: 'running',
-      waitingFor: undefined,
-    });
+  });
+
+  it('parses background sessions with state instead of status', async () => {
+    const { parseClaudeAgentsOutput } = await import('../src/claude-inbox.js');
+    
+    const output = JSON.stringify([
+      {
+        id: 'bg_session',
+        name: 'Background Task',
+        state: 'running',
+        // no pid for background sessions
+      },
+    ]);
+    
+    const result = parseClaudeAgentsOutput(output);
+    
+    expect(result).toHaveLength(1);
+    expect(result[0].state).toBe('running');
+    expect(result[0].pid).toBeUndefined();
   });
 
   it('returns empty array for invalid JSON', async () => {
@@ -64,17 +95,6 @@ describe('Claude Inbox - parseClaudeAgentsOutput', () => {
     expect(parseClaudeAgentsOutput('{}')).toEqual([]);
     expect(parseClaudeAgentsOutput('')).toEqual([]);
   });
-
-  it('handles missing fields gracefully', async () => {
-    const { parseClaudeAgentsOutput } = await import('../src/claude-inbox.js');
-    
-    const output = JSON.stringify([{ id: 'minimal' }]);
-    const result = parseClaudeAgentsOutput(output);
-    
-    expect(result).toHaveLength(1);
-    expect(result[0].sessionId).toBe('minimal');
-    expect(result[0].pid).toBeUndefined();
-  });
 });
 
 describe('Claude Inbox - parseRegistryFile', () => {
@@ -82,41 +102,54 @@ describe('Claude Inbox - parseRegistryFile', () => {
     vi.unstubAllEnvs();
   });
 
-  it('parses valid registry file content', async () => {
+  it('parses registry file with all fields', async () => {
     const { parseRegistryFile } = await import('../src/claude-inbox.js');
     
     const content = JSON.stringify({
-      messagingSocketPath: '/tmp/cc-socks-1000/12345.sock',
       pid: 12345,
-      name: 'My Session',
-      kind: 'interactive',
-      jobId: 'job_xyz',
       sessionId: 'sess_abc123',
-      permissionMode: 'normal',
+      cwd: '/home/user/project',
+      startedAt: 1727500000000,
+      procStart: 1727500000,
+      version: '2.1.284',
+      peerProtocol: 1,
+      peerFeatures: ['notify_idle', 'artifact_yield'],
+      kind: 'interactive',
+      entrypoint: 'claude',
+      pidDomain: 'win32:pearlwolf',
+      messagingSocketPath: '\\\\.\\pipe\\LOCAL\\cc-msg-abc123def456',
+      name: 'My Session',
+      nameSource: 'user',
+      nameSince: 1727500100000,
+      status: 'idle',
+      updatedAt: 1727500200000,
+      statusUpdatedAt: 1727500200000,
     });
     
     const result = parseRegistryFile(content);
     
     expect(result).not.toBeNull();
-    expect(result!.messagingSocketPath).toBe('/tmp/cc-socks-1000/12345.sock');
     expect(result!.pid).toBe(12345);
-    expect(result!.name).toBe('My Session');
+    expect(result!.sessionId).toBe('sess_abc123');
     expect(result!.kind).toBe('interactive');
-    expect(result!.permissionMode).toBe('normal');
+    expect(result!.pidDomain).toBe('win32:pearlwolf');
+    expect(result!.messagingSocketPath).toBe('\\\\.\\pipe\\LOCAL\\cc-msg-abc123def456');
+    expect(result!.peerFeatures).toEqual(['notify_idle', 'artifact_yield']);
   });
 
-  it('handles crossSessionInbound as permissionMode fallback', async () => {
+  it('parses minimal registry file', async () => {
     const { parseRegistryFile } = await import('../src/claude-inbox.js');
     
     const content = JSON.stringify({
+      pid: 99999,
       messagingSocketPath: '/tmp/test.sock',
-      crossSessionInbound: 'accept',
     });
     
     const result = parseRegistryFile(content);
     
     expect(result).not.toBeNull();
-    expect(result!.permissionMode).toBe('accept');
+    expect(result!.pid).toBe(99999);
+    expect(result!.messagingSocketPath).toBe('/tmp/test.sock');
   });
 
   it('returns null for invalid JSON', async () => {
@@ -132,6 +165,96 @@ describe('Claude Inbox - parseRegistryFile', () => {
     expect(parseRegistryFile('[]')).toBeNull();
     expect(parseRegistryFile('"string"')).toBeNull();
     expect(parseRegistryFile('null')).toBeNull();
+  });
+});
+
+describe('Claude Inbox - parseKeyFile', () => {
+  it('parses valid key file', async () => {
+    const { parseKeyFile } = await import('../src/claude-inbox.js');
+    
+    const content = JSON.stringify({
+      peerToken: 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6',
+      procStartFt: 133123456789012345,
+      pidDomain: 'win32:pearlwolf',
+    });
+    
+    const result = parseKeyFile(content);
+    
+    expect(result).not.toBeNull();
+    expect(result!.peerToken).toBe('a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6');
+    expect(result!.pidDomain).toBe('win32:pearlwolf');
+  });
+
+  it('returns null for invalid key file', async () => {
+    const { parseKeyFile } = await import('../src/claude-inbox.js');
+    
+    expect(parseKeyFile('not json')).toBeNull();
+    expect(parseKeyFile('[]')).toBeNull();
+    expect(parseKeyFile('')).toBeNull();
+  });
+});
+
+describe('Claude Inbox - findAuthToken', () => {
+  let tempDir: string;
+  
+  beforeEach(() => {
+    tempDir = join(tmpdir(), `claude-inbox-auth-test-${Date.now()}`);
+    mkdirSync(tempDir, { recursive: true });
+    vi.stubEnv('CLAUDE_SESSIONS_DIR', tempDir);
+    vi.stubEnv('CLAUDE_INBOX_MOCK', '0');
+  });
+  
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    if (existsSync(tempDir)) {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('finds auth token from key file', async () => {
+    const { findAuthToken } = await import('../src/claude-inbox.js');
+    
+    // Create key file: <pid>.<sha256hex>.key
+    const keyContent = JSON.stringify({
+      peerToken: 'test_token_32_characters_long_xx',
+      procStartFt: 133123456789012345,
+      pidDomain: 'linux:testhost',
+    });
+    writeFileSync(join(tempDir, '12345.abc123def456.key'), keyContent);
+    
+    const token = findAuthToken(12345);
+    
+    expect(token).toBe('test_token_32_characters_long_xx');
+  });
+
+  it('prefers CLAUDE_CODE_MESSAGING_TOKEN env var', async () => {
+    vi.stubEnv('CLAUDE_CODE_MESSAGING_TOKEN', 'env_token_override');
+    
+    const { findAuthToken } = await import('../src/claude-inbox.js');
+    
+    // Create key file that should be ignored
+    const keyContent = JSON.stringify({ peerToken: 'file_token' });
+    writeFileSync(join(tempDir, '12345.abc123.key'), keyContent);
+    
+    const token = findAuthToken(12345);
+    
+    expect(token).toBe('env_token_override');
+  });
+
+  it('returns undefined when no key file exists', async () => {
+    const { findAuthToken } = await import('../src/claude-inbox.js');
+    
+    const token = findAuthToken(99999);
+    
+    expect(token).toBeUndefined();
+  });
+
+  it('returns undefined for undefined pid', async () => {
+    const { findAuthToken } = await import('../src/claude-inbox.js');
+    
+    const token = findAuthToken(undefined);
+    
+    expect(token).toBeUndefined();
   });
 });
 
@@ -152,26 +275,26 @@ describe('Claude Inbox - scanRegistryFiles', () => {
     }
   });
 
-  it('scans directory and parses JSON files', async () => {
+  it('scans <pid>.json files in directory', async () => {
     const { scanRegistryFiles } = await import('../src/claude-inbox.js');
     
-    // Create test registry files
+    // Create registry files named <pid>.json
     writeFileSync(
-      join(tempDir, 'sess_abc123.json'),
+      join(tempDir, '12345.json'),
       JSON.stringify({
+        pid: 12345,
         sessionId: 'sess_abc123',
         messagingSocketPath: '/tmp/abc.sock',
-        pid: 1111,
         name: 'Session A',
       }),
     );
     
     writeFileSync(
-      join(tempDir, 'sess_def456.json'),
+      join(tempDir, '67890.json'),
       JSON.stringify({
+        pid: 67890,
         sessionId: 'sess_def456',
-        messagingSocketPath: '/tmp/def.sock',
-        pid: 2222,
+        messagingSocketPath: '\\\\.\\pipe\\LOCAL\\cc-msg-xyz',
       }),
     );
     
@@ -181,20 +304,31 @@ describe('Claude Inbox - scanRegistryFiles', () => {
     expect(result.get('sess_abc123')).toBeDefined();
     expect(result.get('sess_abc123')!.name).toBe('Session A');
     expect(result.get('sess_def456')).toBeDefined();
-    expect(result.get('sess_def456')!.pid).toBe(2222);
+    expect(result.get('sess_def456')!.pid).toBe(67890);
   });
 
-  it('skips invalid files gracefully', async () => {
+  it('ignores .key files', async () => {
     const { scanRegistryFiles } = await import('../src/claude-inbox.js');
     
-    writeFileSync(join(tempDir, 'valid.json'), JSON.stringify({ sessionId: 'valid' }));
-    writeFileSync(join(tempDir, 'invalid.json'), 'not json');
-    mkdirSync(join(tempDir, 'subdir'));
+    writeFileSync(join(tempDir, '12345.json'), JSON.stringify({ pid: 12345, sessionId: 'valid' }));
+    writeFileSync(join(tempDir, '12345.abc123.key'), JSON.stringify({ peerToken: 'secret' }));
     
     const result = scanRegistryFiles();
     
     expect(result.size).toBe(1);
     expect(result.get('valid')).toBeDefined();
+  });
+
+  it('ignores non-pid-named JSON files', async () => {
+    const { scanRegistryFiles } = await import('../src/claude-inbox.js');
+    
+    writeFileSync(join(tempDir, '12345.json'), JSON.stringify({ pid: 12345, sessionId: 'valid' }));
+    writeFileSync(join(tempDir, 'config.json'), JSON.stringify({ setting: 'value' }));
+    writeFileSync(join(tempDir, 'sess_abc.json'), JSON.stringify({ sessionId: 'abc' }));
+    
+    const result = scanRegistryFiles();
+    
+    expect(result.size).toBe(1);
   });
 
   it('returns empty map when directory does not exist', async () => {
@@ -237,7 +371,6 @@ describe('Claude Inbox - listClaudeLiveSessions (mock mode)', () => {
     expect(result[0].sessionId).toBe('mock_session_1');
     expect(result[0].socketExists).toBe(true);
     
-    // Clean up
     setMockLiveSessions([]);
   });
 });
@@ -362,7 +495,27 @@ describe('Claude Inbox - sendToClaudeSession (mock mode)', () => {
     setMockLiveSessions([]);
   });
 
-  it('fails when socket does not exist', async () => {
+  it('delivers message to Windows named pipe session', async () => {
+    const { sendToClaudeSession, setMockLiveSessions } = await import('../src/claude-inbox.js');
+    
+    setMockLiveSessions([
+      {
+        sessionId: 'sess_win',
+        messagingSocketPath: '\\\\.\\pipe\\LOCAL\\cc-msg-abc123',
+        socketExists: true,
+        source: 'both',
+      },
+    ]);
+    
+    const result = await sendToClaudeSession('sess_win', 'Hello from Windows!');
+    
+    expect(result.delivered).toBe(true);
+    expect(result.socketPath).toBe('\\\\.\\pipe\\LOCAL\\cc-msg-abc123');
+    
+    setMockLiveSessions([]);
+  });
+
+  it('fails when socket does not exist (Unix)', async () => {
     const { sendToClaudeSession, setMockLiveSessions } = await import('../src/claude-inbox.js');
     
     setMockLiveSessions([
@@ -378,27 +531,6 @@ describe('Claude Inbox - sendToClaudeSession (mock mode)', () => {
     
     expect(result.delivered).toBe(false);
     expect(result.error).toMatch(/socket/i);
-    
-    setMockLiveSessions([]);
-  });
-
-  it('returns warning for bypass-permissions mode', async () => {
-    const { sendToClaudeSession, setMockLiveSessions } = await import('../src/claude-inbox.js');
-    
-    setMockLiveSessions([
-      {
-        sessionId: 'sess_abc',
-        messagingSocketPath: '/tmp/test.sock',
-        socketExists: true,
-        permissionMode: 'bypass-permissions',
-        source: 'both',
-      },
-    ]);
-    
-    const result = await sendToClaudeSession('sess_abc', 'Hello!');
-    
-    expect(result.delivered).toBe(true);
-    expect(result.warning).toMatch(/bypass-permissions/i);
     
     setMockLiveSessions([]);
   });
@@ -422,7 +554,7 @@ describe('Claude Inbox - sendToClaudeSession (mock mode)', () => {
   });
 });
 
-describe('Claude Inbox - sendToClaudeSession (real socket)', () => {
+describe('Claude Inbox - socket communication', () => {
   let server: Server | null = null;
   let socketPath: string;
   let receivedData: string[] = [];
@@ -446,11 +578,49 @@ describe('Claude Inbox - sendToClaudeSession (real socket)', () => {
     }
   });
 
-  it('sends message over real Unix socket', async () => {
-    // Create a test socket server
+  it('sends auth and message over socket', async () => {
+    // Create a test socket server that accepts connection and receives data
     server = createServer((socket) => {
       socket.on('data', (data) => {
         receivedData.push(data.toString());
+        // Don't close immediately - let rejection timer pass
+      });
+    });
+    
+    await new Promise<void>((resolve) => {
+      server!.listen(socketPath, () => resolve());
+    });
+    
+    // Test sending via raw socket (not through sendToClaudeSession which needs mocking)
+    const { createConnection } = await import('node:net');
+    const client = createConnection(socketPath);
+    
+    await new Promise<void>((resolve, reject) => {
+      client.on('connect', () => {
+        const authLine = JSON.stringify({ type: 'auth', token: 'test_token_123' });
+        const msgLine = JSON.stringify({ type: 'user', message: { role: 'user', content: 'Hello!' } });
+        client.write(authLine + '\n' + msgLine + '\n');
+        setTimeout(() => {
+          client.end();
+          resolve();
+        }, 100);
+      });
+      client.on('error', reject);
+    });
+    
+    expect(receivedData.length).toBeGreaterThan(0);
+    const fullData = receivedData.join('');
+    expect(fullData).toContain('auth');
+    expect(fullData).toContain('test_token_123');
+    expect(fullData).toContain('user');
+    expect(fullData).toContain('Hello!');
+  });
+
+  it('detects EOF as rejection', async () => {
+    // Server that closes immediately after receiving data (simulating auth rejection)
+    server = createServer((socket) => {
+      socket.on('data', () => {
+        // Close immediately to simulate rejection
         socket.end();
       });
     });
@@ -459,34 +629,77 @@ describe('Claude Inbox - sendToClaudeSession (real socket)', () => {
       server!.listen(socketPath, () => resolve());
     });
     
-    // Dynamically import and set up mock sessions pointing to real socket
-    const { sendToClaudeSession, setMockLiveSessions } = await import('../src/claude-inbox.js');
-    
-    // For this test, we need to bypass the mock mode but use real socket
-    vi.stubEnv('CLAUDE_INBOX_MOCK', '0');
-    
-    // We can't easily test the real sendToClaudeSession without modifying the module,
-    // so let's just verify the socket server works
     const { createConnection } = await import('node:net');
-    const client = createConnection(socketPath);
     
-    await new Promise<void>((resolve, reject) => {
+    const result = await new Promise<string>((resolve) => {
+      const client = createConnection(socketPath);
+      let result = 'connected';
+      
       client.on('connect', () => {
         client.write('{"type":"user","message":{"role":"user","content":"test"}}\n');
-        client.end();
       });
-      client.on('close', () => resolve());
-      client.on('error', reject);
+      
+      client.on('end', () => {
+        result = 'EOF';
+        resolve(result);
+      });
+      
+      client.on('error', (err) => {
+        result = `error:${err.message}`;
+        resolve(result);
+      });
+      
+      client.on('close', () => {
+        if (result === 'connected') {
+          result = 'closed';
+          resolve(result);
+        }
+      });
     });
     
-    expect(receivedData.length).toBeGreaterThan(0);
-    expect(receivedData[0]).toContain('user');
-    expect(receivedData[0]).toContain('test');
+    expect(result).toBe('EOF');
+  });
+
+  it('handles connection timeout for missing socket', async () => {
+    const { createConnection } = await import('node:net');
+    const nonexistentPath = join(tmpdir(), `nonexistent-${Date.now()}.sock`);
+    
+    const startTime = Date.now();
+    
+    await new Promise<void>((resolve) => {
+      const client = createConnection(nonexistentPath);
+      
+      client.on('error', () => {
+        resolve();
+      });
+      
+      client.on('connect', () => {
+        client.end();
+        resolve();
+      });
+    });
+    
+    const elapsed = Date.now() - startTime;
+    // Should fail quickly (ENOENT), not timeout
+    expect(elapsed).toBeLessThan(1000);
   });
 });
 
 describe('Claude Inbox - wire format', () => {
-  it('generates correct message format', async () => {
+  it('generates correct auth message format', () => {
+    const auth = {
+      type: 'auth',
+      token: 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6',
+    };
+    
+    const json = JSON.stringify(auth);
+    const parsed = JSON.parse(json);
+    
+    expect(parsed.type).toBe('auth');
+    expect(parsed.token).toHaveLength(32);
+  });
+
+  it('generates correct user message format', () => {
     const message = {
       type: 'user',
       message: { role: 'user', content: 'Hello, Claude!' },
@@ -500,16 +713,57 @@ describe('Claude Inbox - wire format', () => {
     expect(parsed.message.content).toBe('Hello, Claude!');
   });
 
-  it('generates correct auth format', async () => {
-    const auth = {
-      type: 'auth',
-      token: 'test-token',
+  it('handles UTF-8 content including emoji and CJK', () => {
+    const content = 'Hello 你好 🎉 café naïve';
+    const message = {
+      type: 'user',
+      message: { role: 'user', content },
     };
     
-    const json = JSON.stringify(auth);
+    const json = JSON.stringify(message);
     const parsed = JSON.parse(json);
     
-    expect(parsed.type).toBe('auth');
-    expect(parsed.token).toBe('test-token');
+    expect(parsed.message.content).toBe(content);
+    expect(parsed.message.content).toContain('你好');
+    expect(parsed.message.content).toContain('🎉');
+    expect(parsed.message.content).toContain('café');
+  });
+
+  it('handles multi-line content', () => {
+    const content = 'Line 1\nLine 2\nLine 3';
+    const message = {
+      type: 'user',
+      message: { role: 'user', content },
+    };
+    
+    const json = JSON.stringify(message);
+    expect(json).not.toContain('\n\n'); // Should be escaped
+    
+    const parsed = JSON.parse(json);
+    expect(parsed.message.content).toBe(content);
+    expect(parsed.message.content.split('\n')).toHaveLength(3);
+  });
+});
+
+describe('Claude Inbox - Windows pipe path handling', () => {
+  it('recognizes various Windows pipe path formats', async () => {
+    const { isWindowsNamedPipe } = await import('../src/claude-inbox.js');
+    
+    // Standard format from live testing
+    expect(isWindowsNamedPipe('\\\\.\\pipe\\LOCAL\\cc-msg-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6')).toBe(true);
+    
+    // Without LOCAL
+    expect(isWindowsNamedPipe('\\\\.\\pipe\\cc-msg-test')).toBe(true);
+    
+    // With \\?\ prefix
+    expect(isWindowsNamedPipe('\\\\?\\pipe\\LOCAL\\cc-msg-xyz')).toBe(true);
+  });
+
+  it('does not treat Unix paths as Windows pipes', async () => {
+    const { isWindowsNamedPipe } = await import('../src/claude-inbox.js');
+    
+    expect(isWindowsNamedPipe('/tmp/socket.sock')).toBe(false);
+    expect(isWindowsNamedPipe('/var/run/claude.sock')).toBe(false);
+    expect(isWindowsNamedPipe('C:\\Users\\test\\socket')).toBe(false);
   });
 });

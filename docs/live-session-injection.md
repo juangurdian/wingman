@@ -352,29 +352,47 @@ ws.send(JSON.stringify({
 
 ## 5. Claude Code Cross-Session Inbox (NEW)
 
-### Path: Per-Session Unix Socket Messaging - IMPLEMENTED
+### Path: Per-Session Socket Messaging - IMPLEMENTED
 
-Claude Code sessions (interactive, background, `-p`; NOT `--bare`) bind a per-session Unix socket (Windows: named pipe) that allows cross-session message injection.
+Claude Code sessions (interactive, background, `-p`; NOT `--bare`) bind a per-session socket that allows cross-session message injection.
+
+**Platform Support**:
+- **Unix (macOS/Linux)**: Unix domain sockets (e.g., `/tmp/cc-socks-1000/<pid>.sock`)
+- **Windows**: Named pipes (e.g., `\\.\pipe\LOCAL\cc-msg-<32hex>`)
 
 **Discovery**:
-- `claude agents --json` lists live sessions with `pid`, `sessionId`, `name`, `status`, `waitingFor`
-- Registry files in `~/.claude/sessions/` contain `messagingSocketPath`, `pid`, `name`, `kind`, `jobId`
-- Socket path exported as `CLAUDE_CODE_MESSAGING_SOCKET` env var (per-session)
-- Fallback socket dir: `/tmp/cc-socks-<uid>/`
+- `claude agents --json` lists live sessions with `pid`, `sessionId`, `name`, `status`/`state`, `waitingFor`
+- Registry files: `~/.claude/sessions/<pid>.json` with fields:
+  - `pid`, `sessionId`, `cwd`, `startedAt`, `procStart`, `version`
+  - `peerProtocol` (1), `peerFeatures` (e.g., `["notify_idle","artifact_yield"]`)
+  - `kind` (`interactive`|`background`), `entrypoint`, `pidDomain` (e.g., `"win32:pearlwolf"`)
+  - `messagingSocketPath`, `name`, `nameSource`, `nameSince`
+  - `status` (`idle`|`busy`|`shell`...), `updatedAt`, `statusUpdatedAt`
+- Background sessions from `claude agents --json` may have `state` instead of `status` and no `pid`
+- Auth key files: `~/.claude/sessions/<pid>.<sha256hex>.key` with `{peerToken, procStartFt, pidDomain}`
 
-**Wire Format** (connect within 30s):
+**Wire Format** (newline-delimited JSON):
 ```json
-{"type":"auth","token":"$CLAUDE_CODE_MESSAGING_TOKEN"}
+{"type":"auth","token":"<32-char peerToken>"}
 {"type":"user","message":{"role":"user","content":"Your message here"}}
 ```
 
-- Auth line is optional on macOS/Linux, required on Windows
-- Messages are newline-delimited JSON
+**Authentication**:
+- Auth token read from key file matching the session's pid (never logged)
+- `CLAUDE_CODE_MESSAGING_TOKEN` env var overrides key file if set
+- **Windows**: Auth is REQUIRED - without it the pipe closes immediately (EOF)
+- **Unix**: Auth is sent when a key file exists (recommended)
 
 **Delivery Behavior**:
-- Idle session: starts a new turn
-- Mid-turn: read between tool calls, shows as "Message from ..."
-- Bypass-permissions mode: may hold behind approval dialog unless `crossSessionInbound=accept`
+- **No acknowledgement**: Server sends nothing on success; connection stays open
+- **Success**: "delivered" means "written without error"
+- **Rejection**: EOF or EPIPE within ~500ms after auth line = rejected (wrong token, no token on Windows)
+- **Missing socket**: Connect timeout (~3s) returns `socket_missing`
+- **Idle session**: Starts a new turn immediately (tested: reply in ~8s)
+- **Busy session**: Message queued, delivered between tool calls ("Message from ...")
+- **UTF-8**: Multi-line text, accents, CJK, and emoji (surrogate pairs) arrive intact
+
+**Cost Note**: Each injected message is a full turn on that session's context. In testing, a single injection cost ~340k tokens (cached context). Plan accordingly for high-context sessions.
 
 **Wingman Tools**:
 
@@ -386,10 +404,10 @@ list_claude_live_sessions
 send_to_claude_session target="session_name_or_id" text="Your message"
 ```
 
-**Live Test**:
+**Live Test (verified on Windows with Claude Code 2.1.284)**:
 1. Start a Claude Code session: `claude`
 2. In the session, run: `echo $CLAUDE_CODE_MESSAGING_SOCKET`
-3. Note the socket path (should be something like `/tmp/cc-socks-1000/<pid>.sock`)
+3. Note the socket path (Unix: `/tmp/cc-socks-1000/<pid>.sock`, Windows: `\\.\pipe\LOCAL\cc-msg-<hex>`)
 4. From Wingman, use `list_claude_live_sessions` to discover the session
 5. Use `send_to_claude_session` to send a message - it appears in the interactive session!
 
@@ -398,12 +416,14 @@ send_to_claude_session target="session_name_or_id" text="Your message"
 - Message appears LIVE in the session
 - No special session configuration required
 - Supports mid-turn injection between tool calls
+- UTF-8, CJK, emoji all work correctly
 
 **Cons**:
-- Registry file format may vary across versions (parse defensively)
-- Windows requires `CLAUDE_CODE_MESSAGING_TOKEN` auth
-- Sessions in bypass-permissions mode may hold messages
+- Registry/key file format may vary across versions (parse defensively)
+- Windows requires auth token from key file
+- Sessions in bypass-permissions mode may hold messages unless `crossSessionInbound=accept`
 - `--bare` sessions don't bind inbox sockets
+- Each injected message costs a full turn on the session's context
 
 ---
 
