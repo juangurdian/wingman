@@ -89,6 +89,15 @@ To view saved tunnel state:
 wingman-tunnel --show-state
 ```
 
+### Approvals
+
+Codex and Claude tool calls that need permission (shell commands, file edits, network access, MCP tools) are parked as approvals. A host must call `resolve_approval` before they run.
+
+- **The bearer token can approve commands on your machine.** Treat it like an SSH key for the directories your agents work in.
+- Prefer **Tailscale Serve** (tailnet-only) over public tunnels, so the endpoint is not reachable from the internet at all.
+- `CLAUDE_PERMISSION_MODE=acceptEdits` or `auto` reduce prompts for Claude. `bypassPermissions` is intentionally not supported.
+- `acceptForSession` on a Claude approval adds session-scoped rules only; Wingman never writes permission rules to Claude settings files.
+
 ### Tunnel Security
 
 When exposing Wingman via a tunnel:
@@ -101,7 +110,7 @@ Always verify the tunnel URL before sharing it. Anyone with the URL and token ca
 ## What Wingman Does NOT Do
 
 - **No TTY hijacking**: Wingman does not attach to terminal processes or inject keystrokes
-- **No auto-approval**: Sandbox prompts and confirmations remain with the local agent client
+- **No auto-approval**: Permission requests wait for an explicit `resolve_approval` from a host (or a Claude permission mode you opted into)
 - **No secrets storage**: Wingman only stores its bearer token; bring your own API keys for Codex/Claude
 - **No persistent daemon**: Wingman runs when you pair; no always-on background service
 

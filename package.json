@@ -1,7 +1,7 @@
 {
   "name": "wingman-mcp",
   "version": "0.1.0",
-  "description": "Your coding agent's wingman — TypeScript MCP bridge + pair CLI so Grok Bot (and other MCP hosts) can talk to live Codex and Claude Code sessions on your machine",
+  "description": "Drive your local Codex and Claude Code sessions from any MCP client — self-hosted MCP bridge with remote approvals",
   "type": "module",
   "main": "dist/mcp/server.js",
   "bin": {
@@ -15,6 +15,7 @@
     "skills",
     "README.md",
     "LICENSE",
+    "CHANGELOG.md",
     "ROADMAP.md"
   ],
   "scripts": {
@@ -36,6 +37,9 @@
     "claude-code",
     "mcp-server",
     "pair-programming",
+    "claude",
+    "ai-agents",
+    "remote-control",
     "open-source"
   ],
   "license": "MIT",

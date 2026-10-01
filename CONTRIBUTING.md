@@ -4,11 +4,12 @@ Thanks for helping build an open MCP bridge between assistant hosts (Grok Bot, C
 
 ## Ways to help
 
-- Fix bugs or improve the Codex app-server client
-- Improve the Claude Code provider (Agent SDK features, async turn tracking)
+- **Tell us how you use it.** Post your setup in [Discussions](https://github.com/juangurdian/wingman/discussions) — real use cases decide what gets built next.
+- **Add a provider** for another coding agent — see [docs/providers.md](docs/providers.md). This is the most valuable contribution.
+- **Pick up a `good first issue`** — [open issues with that label](https://github.com/juangurdian/wingman/labels/good%20first%20issue) are scoped for a first PR.
+- Fix bugs or improve the Codex and Claude providers
 - Improve pairing UX (tunnel helpers, installers, docs)
-- Add tests, types, and CI
-- Write guides for other MCP hosts
+- Write guides for other MCP hosts, or [recipes](docs/recipes.md) for new use cases
 - Improve the doctor command with more checks
 
 ## Dev setup
@@ -29,6 +30,9 @@ Node 20+ required. Mock mode needs no Codex/Claude CLI. Config lives in `~/.wing
 2. Keep changes focused; include tests when behavior changes
 3. Run `npm test` and `npm run build` before opening a PR
 4. Describe what changed and how you verified it
+5. Add a line to the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md) for user-visible changes
+
+New to the codebase? Start at `src/mcp/tools.ts` (the MCP tool handlers) and `src/providers/types.ts` (the provider interface). `tests/http-server.test.ts` shows the whole flow over real HTTP.
 
 ## Design principles
 
@@ -36,8 +40,9 @@ Node 20+ required. Mock mode needs no Codex/Claude CLI. Config lives in `~/.wing
 - **SDK over TTY** — use official SDKs; never claim TTY hijack of interactive sessions
 - **Easy pair** — one local command + tunnel + remote MCP URL
 - **Bearer auth** — never ship default open endpoints
+- **Never auto-approve** — permission requests wait for an explicit host decision
 - **Honest limits** — document can/can't clearly (see ROADMAP.md non-goals)
 
 ## Code of conduct
 
-Be respectful. Harassment and bad-faith spam are not welcome. Maintainers may close PRs/issues that violate that bar.
+Everyone taking part in the project follows the [Code of Conduct](CODE_OF_CONDUCT.md).

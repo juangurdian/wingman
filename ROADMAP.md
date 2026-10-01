@@ -53,6 +53,7 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | Claude wait_turn parity | ✅ | `wait_turn` for Claude sessions; soft stubs for steer/approvals with clear errors |
 | Codex model override | ✅ | `WINGMAN_CODEX_MODEL` env var + `model` arg on `create_session`; doctor checks for models that may require API access |
 | Host identity / multi-host | ✅ | `WINGMAN_HOST_ID`/`WINGMAN_HOST_NAME` config; `hostId`/`hostName` in session responses; [multi-host guide](docs/hosts/multi-host.md) |
+| Claude approvals | ✅ | Tool permission prompts surface via `list_approvals` / `resolve_approval`; `CLAUDE_PERMISSION_MODE`, `CLAUDE_MAX_TURNS` |
 
 ### Next
 
@@ -78,8 +79,8 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | Web dashboard | Local-only status page for paired sessions |
 | Plugin architecture | Provider plugins beyond Codex/Claude |
 | Durable tunnels | Tailscale daemon over trycloudflare ephemeral — more reliable for long sessions |
-| wait_turn post-completion | Return `completed + snippet` instead of bare `idle` when turn finishes between polls |
-| Surface systemError | Expose `systemError` field in `get_session` / `wait_turn` for better error visibility |
+| wait_turn post-completion | ✅ Claude — `wait_turn` reports the last turn's outcome + snippet; Codex still returns `idle` |
+| Surface systemError | ✅ Claude — `lastError` in `get_session`, `error` in `wait_turn`; Codex pending |
 | Absorb thread/list lag | Handle delay after `create_session` before thread appears in `thread/list` |
 | Pair supervisor | Crash recovery without token rotation; prefer `--reuse-token` when config exists |
 | Cross-host interrupt guard | Prevent accidental cross-host interrupt by default in multi-host setups |
@@ -116,7 +117,7 @@ Wingman intentionally does **not** do:
 |------|-------|---------------------|
 | **Omnigent / AO / Superset** | Full multi-agent orchestration | Wingman is just the bridge — no orchestration layer |
 | **AgentBridge** | Claude↔Codex relay | Wingman adds Grok/Cursor MCP, dual-provider, session discovery |
-| **Claude Remote Control** | Browser automation of claude.ai | Wingman uses official SDK; no browser puppeteering |
+| **Claude Code Remote Control** | First-party: continue a local Claude Code session from claude.ai or the Claude app | Wingman is vendor-neutral: any MCP host, Codex and Claude behind one endpoint, self-hosted |
 | **codex-supervisor-mcp** | Codex-only MCP server | Wingman adds Claude, session discovery, richer status |
 
 ## Contributing
