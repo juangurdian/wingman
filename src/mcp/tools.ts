@@ -35,8 +35,10 @@ export const CreateSessionSchema = z.object({
   prompt: z.string().optional(),
   name: z.string().optional(),
   tags: z.array(z.string()).optional(),
-  /** Model override for Codex sessions. Optional; defaults to Codex config/defaults. Ignored for other providers. */
-  model: z.string().optional(),
+  model: z
+    .string()
+    .optional()
+    .describe('Model override for Codex sessions. Optional; defaults to Codex config/defaults. Ignored for other providers.'),
 });
 
 export const SetSessionMetaSchema = z.object({
@@ -104,13 +106,20 @@ function errorResult(err: unknown) {
   };
 }
 
+/** Muse has no real mode yet, so only include it in unfiltered listings when its mock is on. */
+function museListedByDefault(): boolean {
+  return process.env.MUSE_MOCK === '1' || process.env.MUSE_MOCK === 'true';
+}
+
 export function createToolHandlers(providers: ProviderRegistry) {
   return {
     async list_sessions(args: z.infer<typeof ListSessionsSchema>) {
       try {
         const names: ProviderName[] = args.provider
           ? [args.provider]
-          : ['codex', 'claude', 'muse'];
+          : museListedByDefault()
+            ? ['codex', 'claude', 'muse']
+            : ['codex', 'claude'];
         const sessions = [];
         for (const name of names) {
           try {

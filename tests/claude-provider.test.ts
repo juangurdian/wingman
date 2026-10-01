@@ -485,7 +485,7 @@ describe('ClaudeProvider mock mode - wait_turn parity', () => {
     expect(steerResult.error).toMatch(/interrupt/i);
   });
 
-  it('listApprovals returns empty array for Claude', async () => {
+  it('listApprovals returns empty array when nothing is pending', async () => {
     const { ClaudeProvider } = await import('../src/providers/claude.js');
     const provider = new ClaudeProvider();
     
@@ -499,7 +499,7 @@ describe('ClaudeProvider mock mode - wait_turn parity', () => {
     expect(approvalsResult.approvals).toEqual([]);
   });
 
-  it('resolveApproval returns unsupported error for Claude', async () => {
+  it('resolveApproval reports unknown approval IDs', async () => {
     const { ClaudeProvider } = await import('../src/providers/claude.js');
     const provider = new ClaudeProvider();
     
@@ -516,7 +516,93 @@ describe('ClaudeProvider mock mode - wait_turn parity', () => {
     expect(resolveResult.sessionId).toBe(result.sessionId);
     expect(resolveResult.approvalId).toBe('any_approval_id');
     expect(resolveResult.resolved).toBe(false);
-    expect(resolveResult.error).toMatch(/claude does not support programmatic approval/i);
-    expect(resolveResult.error).toMatch(/local claude cli/i);
+    expect(resolveResult.error).toMatch(/no pending approval/i);
+  });
+});
+
+describe('ClaudeProvider mock mode - approvals', () => {
+  beforeEach(() => {
+    vi.stubEnv('CLAUDE_MOCK', '1');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  async function sessionAwaitingApproval() {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const created = await provider.createSession({ cwd: '/tmp/test' });
+    const sent = await provider.sendMessage(created.sessionId, 'sudo apt update');
+    return { provider, sessionId: created.sessionId, turnId: sent.turnId };
+  }
+
+  it('surfaces a pending approval for risky commands', async () => {
+    const { provider, sessionId, turnId } = await sessionAwaitingApproval();
+
+    const { approvals } = await provider.listApprovals(sessionId);
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]).toMatchObject({
+      sessionId,
+      turnId,
+      kind: 'command',
+      toolName: 'Bash',
+      command: 'sudo apt update',
+    });
+
+    const detail = await provider.getSession(sessionId);
+    expect(detail?.status).toBe('running');
+    expect(detail?.pendingApprovals).toBe(1);
+  });
+
+  it('waitTurn returns inProgress while blocked on approvals', async () => {
+    const { provider, sessionId, turnId } = await sessionAwaitingApproval();
+
+    const result = await provider.waitTurn(sessionId, { timeoutMs: 1000, pollIntervalMs: 20 });
+    expect(result).toMatchObject({ sessionId, turnId, status: 'inProgress', pendingApprovals: 1 });
+  });
+
+  it('accept lets the turn finish', async () => {
+    const { provider, sessionId, turnId } = await sessionAwaitingApproval();
+    const [approval] = (await provider.listApprovals(sessionId)).approvals;
+
+    const resolved = await provider.resolveApproval(sessionId, approval.id, 'accept');
+    expect(resolved).toMatchObject({ resolved: true, decision: 'accept' });
+
+    const waited = await provider.waitTurn(sessionId, { timeoutMs: 1000, pollIntervalMs: 20 });
+    expect(waited.status).toBe('completed');
+    expect(waited.turnId).toBe(turnId);
+    expect(waited.latestMessage).toContain('Ran: sudo apt update');
+    expect((await provider.listApprovals(sessionId)).approvals).toEqual([]);
+  });
+
+  it('decline finishes the turn without running the command', async () => {
+    const { provider, sessionId } = await sessionAwaitingApproval();
+    const [approval] = (await provider.listApprovals(sessionId)).approvals;
+
+    await provider.resolveApproval(sessionId, approval.id, 'decline');
+    const waited = await provider.waitTurn(sessionId, { timeoutMs: 1000, pollIntervalMs: 20 });
+
+    expect(waited.status).toBe('completed');
+    expect(waited.latestMessage).toMatch(/did not run/i);
+  });
+
+  it('an approval can only be resolved once', async () => {
+    const { provider, sessionId } = await sessionAwaitingApproval();
+    const [approval] = (await provider.listApprovals(sessionId)).approvals;
+
+    await provider.resolveApproval(sessionId, approval.id, 'accept');
+    const again = await provider.resolveApproval(sessionId, approval.id, 'accept');
+
+    expect(again.resolved).toBe(false);
+  });
+
+  it('interrupt clears pending approvals', async () => {
+    const { provider, sessionId, turnId } = await sessionAwaitingApproval();
+
+    const interrupted = await provider.interrupt(sessionId);
+    expect(interrupted).toMatchObject({ status: 'interrupted', turnId });
+    expect((await provider.listApprovals(sessionId)).approvals).toEqual([]);
+    expect(provider.getSessionStatus(sessionId)).toBe('idle');
   });
 });

@@ -337,6 +337,30 @@ describe('tool handlers with mocked Codex provider', () => {
     expect(body.sessions.some((s: { id: string }) => s.id === '_claude_stub')).toBe(true);
   });
 
+  it('list_sessions without provider skips Muse unless MUSE_MOCK is set', async () => {
+    const muse = {
+      name: 'muse',
+      listSessions: async () => {
+        throw new Error('Muse provider requires MUSE_MOCK=1');
+      },
+    } as unknown as SessionProvider;
+    const withMuse = createToolHandlers({
+      ...registry(codex, new MockClaudeDisabled()),
+      muse,
+      get(name: ProviderName) {
+        if (name === 'muse') return muse;
+        return name === 'claude' ? this.claude : codex;
+      },
+    } as ProviderRegistry);
+
+    const res = await withMuse.list_sessions({});
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessions.some((s: { provider: string }) => s.provider === 'muse')).toBe(false);
+
+    const explicit = JSON.parse((await withMuse.list_sessions({ provider: 'muse' })).content[0]!.text);
+    expect(explicit.sessions[0].id).toBe('_muse_stub');
+  });
+
   it('send_message forwards text', async () => {
     const res = await handlers.send_message({
       provider: 'codex',

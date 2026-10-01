@@ -117,6 +117,36 @@ export function resolveWaitTurnPollMs(): number {
   return WINGMAN_WAIT_TURN_POLL_MS_DEFAULT;
 }
 
+// Claude turn configuration
+
+/**
+ * Permission modes Wingman passes through to the Claude Agent SDK.
+ * `bypassPermissions` is deliberately excluded: Wingman is reachable over a tunnel,
+ * so every tool call that needs permission must go through list_approvals/resolve_approval
+ * (or a mode the user opted into, like acceptEdits).
+ */
+export const CLAUDE_PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'dontAsk', 'auto'] as const;
+export type ClaudePermissionMode = (typeof CLAUDE_PERMISSION_MODES)[number];
+
+/** Permission mode for Wingman-run Claude turns. Default: 'default' (ask via approvals). */
+export function resolveClaudePermissionMode(): ClaudePermissionMode {
+  const env = process.env.CLAUDE_PERMISSION_MODE?.trim();
+  if (!env) return 'default';
+  if ((CLAUDE_PERMISSION_MODES as readonly string[]).includes(env)) {
+    return env as ClaudePermissionMode;
+  }
+  throw new Error(
+    `Unsupported CLAUDE_PERMISSION_MODE "${env}". Use one of: ${CLAUDE_PERMISSION_MODES.join(', ')}.`,
+  );
+}
+
+/** Max agentic turns (API round-trips) per Claude turn. Unset = SDK default (no limit). */
+export function resolveClaudeMaxTurns(): number | undefined {
+  const env = process.env.CLAUDE_MAX_TURNS?.trim();
+  if (env && /^\d+$/.test(env) && Number(env) > 0) return Number(env);
+  return undefined;
+}
+
 // Health endpoint configuration
 
 /** Whether /healthz requires bearer auth. Default: true (auth required). */

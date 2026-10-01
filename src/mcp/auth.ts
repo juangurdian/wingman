@@ -1,4 +1,12 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
+
+/** Constant-time comparison; hashing first keeps lengths equal for timingSafeEqual. */
+function tokensMatch(provided: string, expected: string): boolean {
+  const a = createHash('sha256').update(provided).digest();
+  const b = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(a, b);
+}
 
 /**
  * Simple bearer-token middleware for the MCP HTTP endpoint.
@@ -17,7 +25,7 @@ export function bearerAuth(expectedToken: string) {
       return;
     }
     const token = match[1]!.trim();
-    if (!token || token !== expectedToken) {
+    if (!token || !tokensMatch(token, expectedToken)) {
       res.status(403).json({ error: 'Invalid bearer token' });
       return;
     }

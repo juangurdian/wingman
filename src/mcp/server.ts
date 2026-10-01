@@ -1,13 +1,13 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 /**
  * Streamable HTTP MCP server with bearer auth.
- * Binds to 127.0.0.1 by default â€” expose via cloudflared/tailscale for Grok Bot.
+ * Binds to 127.0.0.1 by default — expose via cloudflared/tailscale for Grok Bot.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
-import { z } from 'zod';
+import { readFileSync } from 'node:fs';
 import {
   createToolHandlers,
   ListSessionsSchema,
@@ -20,10 +20,8 @@ import {
   SteerSchema,
   ListApprovalsSchema,
   ResolveApprovalSchema,
-  ApprovalDecisionSchema,
   SetSessionMetaSchema,
   ExportTranscriptSchema,
-  ExportFormatSchema,
 } from './tools.js';
 import { bearerAuth } from './auth.js';
 import { createProviders } from '../providers/index.js';
@@ -34,8 +32,14 @@ import {
   resolveToken,
   mcpUrl,
   isHealthzAuthFree,
+  resolveClaudePermissionMode,
   type BridgeConfig,
 } from '../config.js';
+
+// Resolves from both src/mcp (tsx) and dist/mcp (built).
+const { version: WINGMAN_VERSION } = JSON.parse(
+  readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+) as { version: string };
 
 export interface StartServerOptions {
   host?: string;
@@ -61,6 +65,9 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'No bearer token configured. Run `npm run pair` first, or pass token explicitly.',
     );
   }
+
+  // Fail fast on a bad CLAUDE_PERMISSION_MODE instead of on the first Claude turn.
+  const claudePermissionMode = resolveClaudePermissionMode();
 
   const providers = createProviders();
   const handlers = createToolHandlers(providers);
@@ -88,17 +95,15 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
   const createServer = () => {
     const server = new McpServer({
       name: 'wingman',
-      version: '0.1.0',
+      version: WINGMAN_VERSION,
     });
 
     server.registerTool(
       'list_sessions',
       {
         description:
-          'List coding-agent sessions. Optional provider filter: codex | claude.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']).optional(),
-        },
+          'List coding-agent sessions. Optional provider filter: codex | claude | muse.',
+        inputSchema: ListSessionsSchema.shape,
       },
       async (args) => handlers.list_sessions(ListSessionsSchema.parse(args)),
     );
@@ -107,11 +112,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'read_transcript',
       {
         description: 'Read recent transcript messages for a session.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-          limit: z.number().int().positive().max(500).optional(),
-        },
+        inputSchema: ReadTranscriptSchema.shape,
       },
       async (args) => handlers.read_transcript(ReadTranscriptSchema.parse(args)),
     );
@@ -120,11 +121,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'send_message',
       {
         description: 'Send a user message into an existing session (starts a turn for Codex).',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-          text: z.string(),
-        },
+        inputSchema: SendMessageSchema.shape,
       },
       async (args) => handlers.send_message(SendMessageSchema.parse(args)),
     );
@@ -133,10 +130,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'interrupt',
       {
         description: 'Interrupt an in-flight turn/session.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-        },
+        inputSchema: InterruptSchema.shape,
       },
       async (args) => handlers.interrupt(InterruptSchema.parse(args)),
     );
@@ -146,14 +140,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       {
         description:
           'Create a new session (Codex: thread/start). Optional cwd, initial prompt, name, tags, and model override (Codex only).',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          cwd: z.string().optional(),
-          prompt: z.string().optional(),
-          name: z.string().optional(),
-          tags: z.array(z.string()).optional(),
-          model: z.string().optional().describe('Model override for Codex sessions. Optional; defaults to Codex config/defaults. Ignored for other providers.'),
-        },
+        inputSchema: CreateSessionSchema.shape,
       },
       async (args) => handlers.create_session(CreateSessionSchema.parse(args)),
     );
@@ -163,10 +150,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       {
         description:
           'Get detailed session info including status (idle/running), active turn ID, and timestamps.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-        },
+        inputSchema: GetSessionSchema.shape,
       },
       async (args) => handlers.get_session(GetSessionSchema.parse(args)),
     );
@@ -175,14 +159,10 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'wait_turn',
       {
         description:
-          'Wait for an active Codex turn to complete, fail, be interrupted, or timeout. ' +
-          'Returns status and latest message snippet. Use instead of polling read_transcript.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-          timeout_ms: z.number().int().positive().max(300_000).optional(),
-          poll_interval_ms: z.number().int().positive().max(10_000).optional(),
-        },
+          'Wait for an active turn to complete, fail, be interrupted, or timeout. ' +
+          'Returns status and latest message snippet; status inProgress means the turn is blocked ' +
+          'on approvals (see list_approvals). Use instead of polling read_transcript.',
+        inputSchema: WaitTurnSchema.shape,
       },
       async (args) => handlers.wait_turn(WaitTurnSchema.parse(args)),
     );
@@ -193,11 +173,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
         description:
           'Add guidance to an in-flight Codex turn without starting a new turn. ' +
           'Use this to provide mid-turn input like follow-up instructions or clarifications.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-          text: z.string(),
-        },
+        inputSchema: SteerSchema.shape,
       },
       async (args) => handlers.steer(SteerSchema.parse(args)),
     );
@@ -206,12 +182,9 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'list_approvals',
       {
         description:
-          'List pending approval requests for a Codex session. ' +
-          'Approvals are required for sandbox commands, file changes, or network access.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-        },
+          'List pending approval requests for a session. Codex: sandbox commands, file changes, ' +
+          'network access. Claude: tool permission prompts (Bash, Edit, Write, WebFetch, MCP tools).',
+        inputSchema: ListApprovalsSchema.shape,
       },
       async (args) => handlers.list_approvals(ListApprovalsSchema.parse(args)),
     );
@@ -220,13 +193,9 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'resolve_approval',
       {
         description:
-          'Resolve a pending Codex approval request. Decisions: accept, acceptForSession, decline, cancel.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-          approval_id: z.string(),
-          decision: ApprovalDecisionSchema,
-        },
+          'Resolve a pending approval request. Decisions: accept, acceptForSession, decline, cancel ' +
+          '(cancel also stops the turn).',
+        inputSchema: ResolveApprovalSchema.shape,
       },
       async (args) => handlers.resolve_approval(ResolveApprovalSchema.parse(args)),
     );
@@ -236,12 +205,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       {
         description:
           'Set session metadata (name, tags) for easier discovery. Works for Wingman-owned sessions.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-          name: z.string().optional(),
-          tags: z.array(z.string()).optional(),
-        },
+        inputSchema: SetSessionMetaSchema.shape,
       },
       async (args) => handlers.set_session_meta(SetSessionMetaSchema.parse(args)),
     );
@@ -251,12 +215,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       {
         description:
           'Export a session transcript as Markdown or JSON. Returns content inline and writes to ~/.wingman/exports/.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-          format: ExportFormatSchema,
-          limit: z.number().int().positive().max(500).optional(),
-        },
+        inputSchema: ExportTranscriptSchema.shape,
       },
       async (args) => handlers.export_transcript(ExportTranscriptSchema.parse(args)),
     );
@@ -264,7 +223,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
     return server;
   };
 
-  // Stateless streamable HTTP (one transport+server per request) â€” simple & robust for tunnels.
+  // Stateless streamable HTTP (one transport+server per request) — simple & robust for tunnels.
   app.post('/mcp', async (req, res) => {
     const server = createServer();
     try {
@@ -321,6 +280,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
     console.error(`wingman MCP listening on ${url}`);
     console.error(`mock=${process.env.CODEX_MOCK === '1' ? 'yes' : 'no'}`);
     console.error(`healthz_auth_free=${healthzAuthFree ? 'yes' : 'no'}`);
+    console.error(`claude_permission_mode=${claudePermissionMode}`);
   }
 
   return {
@@ -362,4 +322,3 @@ if (isMain) {
   });
 }
 
-// silence unused import in some bundlers

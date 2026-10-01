@@ -9,8 +9,15 @@
  * This does NOT attach to arbitrary open terminal processes.
  * Discovery = SDK listSessions / getSessionMessages + resume via query().
  *
+ * Permissions:
+ * - Tool calls that need permission are parked as approvals (list_approvals / resolve_approval)
+ *   via the SDK's canUseTool callback, so a remote host can approve or decline them.
+ * - CLAUDE_PERMISSION_MODE (default | acceptEdits | plan | dontAsk | auto) and CLAUDE_MAX_TURNS
+ *   tune Wingman-run turns.
+ *
  * Mock mode (CLAUDE_MOCK=1):
  * - Returns simulated discovered sessions for testing merge/dedupe without a real Claude install.
+ * - Messages containing `sudo` or `rm -rf` request a simulated approval.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -18,7 +25,15 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type {
+  CanUseTool,
+  PermissionResult,
+  PermissionUpdate,
+  SDKMessage,
+} from '@anthropic-ai/claude-agent-sdk';
+import type {
+  Approval,
   ApprovalDecision,
+  ApprovalKind,
   CreateSessionResult,
   InterruptResult,
   ListApprovalsResult,
@@ -37,6 +52,8 @@ import type {
 } from './types.js';
 import {
   resolveClaudeSendTimeoutMs,
+  resolveClaudeMaxTurns,
+  resolveClaudePermissionMode,
   resolveWaitTurnTimeoutMs,
   resolveHostId,
   resolveHostName,
@@ -76,6 +93,81 @@ interface ActiveTurn {
   sessionId: string;
   startedAt: number;
   abortController?: AbortController;
+}
+
+interface PendingClaudeApproval {
+  approval: Approval;
+  /** Full (untruncated) tool input, echoed back to the SDK on allow. */
+  input: Record<string, unknown>;
+  suggestions?: PermissionUpdate[];
+  settle: (result: PermissionResult) => void;
+}
+
+interface TurnOutcome {
+  turnId: string;
+  status: 'completed' | 'failed' | 'interrupted';
+  error?: string;
+}
+
+/** Mock messages matching this request a simulated approval (mirrors the Codex mock). */
+const MOCK_APPROVAL_PATTERN = /\b(sudo|rm\s+-rf?)\b/i;
+
+/** Long tool inputs (e.g. Write content) are truncated in list_approvals output. */
+const MAX_APPROVAL_INPUT_CHARS = 2000;
+
+function approvalKind(toolName: string): ApprovalKind {
+  if (toolName === 'Bash') return 'command';
+  if (['Edit', 'MultiEdit', 'Write', 'NotebookEdit'].includes(toolName)) return 'fileChange';
+  if (toolName === 'WebFetch' || toolName === 'WebSearch') return 'network';
+  return 'tool';
+}
+
+function summarizeInput(input: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    out[key] =
+      typeof value === 'string' && value.length > MAX_APPROVAL_INPUT_CHARS
+        ? `${value.slice(0, MAX_APPROVAL_INPUT_CHARS)}… [${value.length - MAX_APPROVAL_INPUT_CHARS} more chars]`
+        : value;
+  }
+  return out;
+}
+
+/** acceptForSession must never write to settings files, so pin suggestions to the session. */
+function toSessionScope(suggestions?: PermissionUpdate[]): PermissionUpdate[] | undefined {
+  return suggestions?.map((s) => ({ ...s, destination: 'session' as const }));
+}
+
+function toPermissionResult(decision: ApprovalDecision, pending: PendingClaudeApproval): PermissionResult {
+  switch (decision) {
+    case 'accept':
+      return { behavior: 'allow', updatedInput: pending.input };
+    case 'acceptForSession':
+      return {
+        behavior: 'allow',
+        updatedInput: pending.input,
+        updatedPermissions: toSessionScope(pending.suggestions),
+      };
+    case 'decline':
+      return { behavior: 'deny', message: 'Declined by the remote approver (Wingman).' };
+    case 'cancel':
+      return {
+        behavior: 'deny',
+        message: 'Cancelled by the remote approver (Wingman).',
+        interrupt: true,
+      };
+  }
+}
+
+/** Map the SDK's final result message to how the turn ended. */
+function outcomeFromResult(turnId: string, msg: Extract<SDKMessage, { type: 'result' }>): TurnOutcome {
+  if (msg.subtype !== 'success') {
+    return { turnId, status: 'failed', error: msg.errors?.join('; ') || msg.subtype };
+  }
+  if (msg.is_error) {
+    return { turnId, status: 'failed', error: msg.result || 'Claude turn ended with an error' };
+  }
+  return { turnId, status: 'completed' };
 }
 
 function useMock(): boolean {
@@ -143,6 +235,8 @@ export class ClaudeProvider implements SessionProvider {
   private mockSessions = new Map<string, MockDiscoveredSession>();
   private mockDiscovered = new Map<string, MockDiscoveredSession>();
   private activeTurns = new Map<string, ActiveTurn>();
+  private pendingApprovals = new Map<string, PendingClaudeApproval[]>();
+  private lastOutcomes = new Map<string, TurnOutcome>();
 
   constructor() {
     if (useMock()) {
@@ -156,6 +250,120 @@ export class ClaudeProvider implements SessionProvider {
 
   getSessionStatus(sessionId: string): 'idle' | 'running' {
     return this.activeTurns.has(sessionId) ? 'running' : 'idle';
+  }
+
+  /**
+   * Park a permission request until a host resolves it with resolve_approval,
+   * or the turn is interrupted. Backs the SDK's canUseTool callback.
+   */
+  private requestApproval(
+    sessionId: string,
+    turnId: string,
+    toolName: string,
+    input: Record<string, unknown>,
+    opts: { signal?: AbortSignal; suggestions?: PermissionUpdate[]; reason?: string; cwd?: string },
+  ): Promise<PermissionResult> {
+    return new Promise((resolve) => {
+      const pending: PendingClaudeApproval = {
+        approval: {
+          id: `appr_${randomUUID().slice(0, 8)}`,
+          sessionId,
+          turnId,
+          kind: approvalKind(toolName),
+          toolName,
+          command: typeof input.command === 'string' ? input.command : undefined,
+          cwd: opts.cwd,
+          reason: opts.reason,
+          input: summarizeInput(input),
+          requestedAt: Date.now(),
+        },
+        input,
+        suggestions: opts.suggestions,
+        settle: (result) => {
+          const remaining = (this.pendingApprovals.get(sessionId) ?? []).filter((p) => p !== pending);
+          if (remaining.length > 0) {
+            this.pendingApprovals.set(sessionId, remaining);
+          } else {
+            this.pendingApprovals.delete(sessionId);
+          }
+          resolve(result);
+        },
+      };
+      this.pendingApprovals.set(sessionId, [...(this.pendingApprovals.get(sessionId) ?? []), pending]);
+      opts.signal?.addEventListener(
+        'abort',
+        () => pending.settle({ behavior: 'deny', message: 'Turn aborted.', interrupt: true }),
+        { once: true },
+      );
+    });
+  }
+
+  private denyPendingApprovals(sessionId: string, message: string): void {
+    for (const pending of [...(this.pendingApprovals.get(sessionId) ?? [])]) {
+      pending.settle({ behavior: 'deny', message, interrupt: true });
+    }
+  }
+
+  private pendingApprovalCount(sessionId: string): number {
+    return this.pendingApprovals.get(sessionId)?.length ?? 0;
+  }
+
+  /** SDK options shared by every Wingman-run turn. */
+  private turnOptions(sessionId: string, cwd: string | undefined, activeTurn: ActiveTurn) {
+    const canUseTool: CanUseTool = (toolName, input, { signal, suggestions, title, decisionReason }) =>
+      this.requestApproval(sessionId, activeTurn.turnId, toolName, input, {
+        signal,
+        suggestions,
+        reason: title ?? decisionReason,
+        cwd,
+      });
+    return {
+      cwd,
+      abortController: activeTurn.abortController,
+      permissionMode: resolveClaudePermissionMode(),
+      maxTurns: resolveClaudeMaxTurns(),
+      canUseTool,
+    };
+  }
+
+  /** Drain an SDK query and record how the turn ended for wait_turn / get_session. */
+  private async consumeTurn(
+    sessionId: string,
+    activeTurn: ActiveTurn,
+    queryGen: AsyncIterable<SDKMessage>,
+  ): Promise<void> {
+    // An interrupted turn can drain after a newer turn started; don't let it
+    // overwrite the newer turn's outcome.
+    const record = (outcome: TurnOutcome) => {
+      const current = this.activeTurns.get(sessionId);
+      if (!current || current === activeTurn) this.lastOutcomes.set(sessionId, outcome);
+    };
+    let outcome: TurnOutcome = { turnId: activeTurn.turnId, status: 'completed' };
+    try {
+      for await (const msg of queryGen) {
+        if (msg.type === 'result') {
+          outcome = outcomeFromResult(activeTurn.turnId, msg);
+          break;
+        }
+      }
+    } catch (err) {
+      if (!activeTurn.abortController?.signal.aborted) {
+        const error = err instanceof Error ? err.message : String(err);
+        record({ turnId: activeTurn.turnId, status: 'failed', error });
+        throw err;
+      }
+    }
+    if (activeTurn.abortController?.signal.aborted) {
+      outcome = { turnId: activeTurn.turnId, status: 'interrupted' };
+    }
+    record(outcome);
+  }
+
+  /** Clear the active turn only if a newer turn has not replaced it. */
+  private finishTurn(sessionId: string, activeTurn: ActiveTurn): void {
+    if (this.activeTurns.get(sessionId) === activeTurn) {
+      this.activeTurns.delete(sessionId);
+    }
   }
 
   private seedMockSessions(): void {
@@ -325,12 +533,15 @@ export class ClaudeProvider implements SessionProvider {
     const activeTurn = this.activeTurns.get(sessionId);
     const hostId = resolveHostId();
     const hostName = resolveHostName();
+    const outcome = this.lastOutcomes.get(sessionId);
     
     return {
       ...session,
       status: activeTurn ? 'running' : 'idle',
       activeTurnId: activeTurn?.turnId,
       activeTurnStartedAt: activeTurn?.startedAt,
+      pendingApprovals: this.pendingApprovalCount(sessionId),
+      lastError: outcome?.status === 'failed' ? outcome.error : undefined,
       hostId,
       hostName,
     };
@@ -427,17 +638,31 @@ export class ClaudeProvider implements SessionProvider {
         this.activeTurns.set(sessionId, { turnId, sessionId, startedAt: Date.now() });
         mock.items.push({ role: 'user', text, turnId });
 
-        setTimeout(() => {
-          mock.items.push({
-            role: 'assistant',
-            text: `[mock Claude] Received: ${text}`,
-            turnId,
-          });
+        const finish = (reply: string) => {
+          mock.items.push({ role: 'assistant', text: reply, turnId });
           mock.preview = text.slice(0, 80);
           mock.updatedAt = Date.now();
           mock.activeTurnId = undefined;
-          this.activeTurns.delete(sessionId);
-        }, 50);
+          if (this.activeTurns.get(sessionId)?.turnId === turnId) {
+            this.activeTurns.delete(sessionId);
+            this.lastOutcomes.set(sessionId, { turnId, status: 'completed' });
+          }
+        };
+
+        if (MOCK_APPROVAL_PATTERN.test(text)) {
+          void this.requestApproval(sessionId, turnId, 'Bash', { command: text }, {
+            cwd: mock.cwd,
+            reason: '[mock] Claude wants to run a command',
+          }).then((result) =>
+            finish(
+              result.behavior === 'allow'
+                ? `[mock Claude] Ran: ${text}`
+                : `[mock Claude] Did not run: ${result.message}`,
+            ),
+          );
+        } else {
+          setTimeout(() => finish(`[mock Claude] Received: ${text}`), 50);
+        }
 
         return { sessionId, turnId, status: 'accepted' };
       }
@@ -475,20 +700,12 @@ export class ClaudeProvider implements SessionProvider {
       const queryGen = sdk.query({
         prompt: text,
         options: {
+          ...this.turnOptions(sessionId, cwd, activeTurn),
           resume: sessionId,
-          cwd,
-          maxTurns: 1,
         },
       });
 
-      for await (const msg of queryGen) {
-        if (activeTurn.abortController?.signal.aborted) {
-          break;
-        }
-        if (msg.type === 'result') {
-          break;
-        }
-      }
+      await this.consumeTurn(sessionId, activeTurn, queryGen);
 
       const registry = loadRegistry();
       const session = registry.sessions.find((s) => s.sessionId === sessionId);
@@ -508,7 +725,7 @@ export class ClaudeProvider implements SessionProvider {
         updateSessionTimestamp(sessionId);
       }
     } finally {
-      this.activeTurns.delete(sessionId);
+      this.finishTurn(sessionId, activeTurn);
     }
   }
 
@@ -519,11 +736,15 @@ export class ClaudeProvider implements SessionProvider {
         const activeTurn = this.activeTurns.get(sessionId);
         const turnId = activeTurn?.turnId ?? mock.activeTurnId;
 
+        this.denyPendingApprovals(sessionId, 'Interrupted via Wingman.');
         if (activeTurn) {
           activeTurn.abortController?.abort();
           this.activeTurns.delete(sessionId);
         }
         mock.activeTurnId = undefined;
+        if (turnId) {
+          this.lastOutcomes.set(sessionId, { turnId, status: 'interrupted' });
+        }
 
         mock.items.push({
           role: 'system',
@@ -544,8 +765,10 @@ export class ClaudeProvider implements SessionProvider {
       };
     }
 
+    this.denyPendingApprovals(sessionId, 'Interrupted via Wingman.');
     activeTurn.abortController?.abort();
     this.activeTurns.delete(sessionId);
+    this.lastOutcomes.set(sessionId, { turnId: activeTurn.turnId, status: 'interrupted' });
 
     return {
       sessionId,
@@ -635,24 +858,16 @@ export class ClaudeProvider implements SessionProvider {
       const queryGen = sdk.query({
         prompt,
         options: {
+          ...this.turnOptions(sessionId, cwd, activeTurn),
           sessionId: sessionId as `${string}-${string}-${string}-${string}-${string}`,
-          cwd,
-          maxTurns: 1,
         },
       });
 
-      for await (const msg of queryGen) {
-        if (activeTurn.abortController?.signal.aborted) {
-          break;
-        }
-        if (msg.type === 'result') {
-          break;
-        }
-      }
+      await this.consumeTurn(sessionId, activeTurn, queryGen);
 
       updateSessionTimestamp(sessionId);
     } finally {
-      this.activeTurns.delete(sessionId);
+      this.finishTurn(sessionId, activeTurn);
     }
   }
 
@@ -660,69 +875,87 @@ export class ClaudeProvider implements SessionProvider {
     const timeoutMs = opts?.timeoutMs ?? resolveWaitTurnTimeoutMs();
     const pollIntervalMs = opts?.pollIntervalMs ?? 500;
 
-    if (useMock()) {
-      const mock = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
-      if (!mock) throw new Error(`Unknown mock session: ${sessionId}`);
+    const mock = useMock()
+      ? this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId)
+      : undefined;
+    if (useMock() && !mock) throw new Error(`Unknown mock session: ${sessionId}`);
 
-      const activeTurn = this.activeTurns.get(sessionId);
-      if (!activeTurn) {
-        const lastAssistant = [...mock.items].reverse().find((i) => i.role === 'assistant');
-        return {
-          sessionId,
-          status: 'idle',
-          latestMessage: lastAssistant?.text?.slice(0, 200),
-        };
-      }
-
-      const turnId = activeTurn.turnId;
-      const startTime = Date.now();
-
-      while (Date.now() - startTime < timeoutMs) {
-        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-
-        const currentTurn = this.activeTurns.get(sessionId);
-        if (!currentTurn || currentTurn.turnId !== turnId) {
-          const lastAssistant = [...mock.items]
-            .reverse()
-            .find((i) => i.role === 'assistant' && i.turnId === turnId);
-          return {
-            sessionId,
-            turnId,
-            status: 'completed',
-            latestMessage: lastAssistant?.text?.slice(0, 200),
-          };
-        }
-      }
-
-      return { sessionId, turnId, status: 'timeout' };
-    }
+    const latestAssistant = async (turnId?: string): Promise<string | undefined> => {
+      const items = mock ? mock.items : (await this.readTranscript(sessionId, 10)).items;
+      return [...items]
+        .reverse()
+        .find((i) => i.role === 'assistant' && (!mock || !turnId || i.turnId === turnId))
+        ?.text?.slice(0, 200);
+    };
 
     const activeTurn = this.activeTurns.get(sessionId);
     if (!activeTurn) {
-      return { sessionId, status: 'idle' };
+      // Report how the last turn ended, so a turn that finished between calls
+      // (e.g. right after resolve_approval) reads as completed, not a bare idle.
+      const outcome = this.lastOutcomes.get(sessionId);
+      if (outcome) {
+        let latestMessage: string | undefined;
+        try {
+          latestMessage = await latestAssistant(outcome.turnId);
+        } catch {
+          // Status still stands without a snippet.
+        }
+        return {
+          sessionId,
+          turnId: outcome.turnId,
+          status: outcome.status,
+          latestMessage,
+          error: outcome.error,
+        };
+      }
+      return {
+        sessionId,
+        status: 'idle',
+        latestMessage: mock ? await latestAssistant() : undefined,
+      };
     }
 
     const turnId = activeTurn.turnId;
-    const startTime = Date.now();
+    const awaitingApproval = (): WaitTurnResult | undefined => {
+      const count = this.pendingApprovalCount(sessionId);
+      if (count === 0) return undefined;
+      return {
+        sessionId,
+        turnId,
+        status: 'inProgress',
+        pendingApprovals: count,
+        latestMessage: `Waiting for ${count} approval(s) — see list_approvals`,
+      };
+    };
 
+    const blocked = awaitingApproval();
+    if (blocked) return blocked;
+
+    const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
 
       const currentTurn = this.activeTurns.get(sessionId);
       if (!currentTurn || currentTurn.turnId !== turnId) {
+        const outcome = this.lastOutcomes.get(sessionId);
+        const ended = outcome?.turnId === turnId ? outcome : undefined;
+        let latestMessage: string | undefined;
         try {
-          const transcript = await this.readTranscript(sessionId, 10);
-          const lastAssistant = [...transcript.items].reverse().find((i) => i.role === 'assistant');
-          return {
-            sessionId,
-            turnId,
-            status: 'completed',
-            latestMessage: lastAssistant?.text?.slice(0, 200),
-          };
+          latestMessage = await latestAssistant(turnId);
         } catch {
-          return { sessionId, turnId, status: 'completed' };
+          // Transcript may be briefly unreadable right after a turn; status still stands.
         }
+        return {
+          sessionId,
+          turnId,
+          status: ended?.status ?? 'completed',
+          latestMessage,
+          error: ended?.error,
+        };
       }
+
+      const stillBlocked = awaitingApproval();
+      if (stillBlocked) return stillBlocked;
     }
 
     return { sessionId, turnId, status: 'timeout' };
@@ -741,23 +974,26 @@ export class ClaudeProvider implements SessionProvider {
   async listApprovals(sessionId: string): Promise<ListApprovalsResult> {
     return {
       sessionId,
-      approvals: [],
+      approvals: (this.pendingApprovals.get(sessionId) ?? []).map((p) => p.approval),
     };
   }
 
   async resolveApproval(
     sessionId: string,
     approvalId: string,
-    _decision: ApprovalDecision,
+    decision: ApprovalDecision,
   ): Promise<ResolveApprovalResult> {
-    return {
-      sessionId,
-      approvalId,
-      resolved: false,
-      error:
-        'Claude does not support programmatic approval resolution. Approvals must be handled ' +
-        'in the local Claude CLI session directly.',
-    };
+    const pending = this.pendingApprovals.get(sessionId)?.find((p) => p.approval.id === approvalId);
+    if (!pending) {
+      return {
+        sessionId,
+        approvalId,
+        resolved: false,
+        error: `No pending approval ${approvalId} for session ${sessionId}. Call list_approvals for current IDs.`,
+      };
+    }
+    pending.settle(toPermissionResult(decision, pending));
+    return { sessionId, approvalId, resolved: true, decision };
   }
 
   async setSessionMeta(

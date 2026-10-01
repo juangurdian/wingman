@@ -1,6 +1,6 @@
 /**
  * Thin provider interface for coding-agent session backends.
- * Codex is first-class; Claude is stubbed.
+ * Codex and Claude are full providers; Muse is mock-only for now.
  */
 
 export type ProviderName = 'codex' | 'claude' | 'muse';
@@ -73,6 +73,10 @@ export interface SessionDetail extends SessionSummary {
   activeTurnStartedAt?: number;
   /** User-set tags for categorization/filtering. */
   tags?: string[];
+  /** Number of approvals waiting on a decision (see list_approvals). */
+  pendingApprovals?: number;
+  /** Error from the most recent turn, if it failed. */
+  lastError?: string;
 }
 
 export interface WaitTurnOptions {
@@ -85,12 +89,17 @@ export interface WaitTurnOptions {
 export interface WaitTurnResult {
   sessionId: string;
   turnId?: string;
-  /** Final status: 'completed' | 'interrupted' | 'failed' | 'timeout' | 'idle' */
-  status: 'completed' | 'interrupted' | 'failed' | 'timeout' | 'idle';
+  /**
+   * Final status: 'completed' | 'interrupted' | 'failed' | 'timeout' | 'idle'.
+   * 'inProgress' means the turn is blocked on approvals (see list_approvals).
+   */
+  status: 'completed' | 'interrupted' | 'failed' | 'timeout' | 'idle' | 'inProgress';
   /** Snippet of the latest agent message if available */
   latestMessage?: string;
   /** Error message if status is 'failed' */
   error?: string;
+  /** Number of approvals blocking the turn when status is 'inProgress' */
+  pendingApprovals?: number;
 }
 
 export interface SteerResult {
@@ -102,7 +111,7 @@ export interface SteerResult {
   error?: string;
 }
 
-export type ApprovalKind = 'command' | 'fileChange' | 'network' | 'writeStdin';
+export type ApprovalKind = 'command' | 'fileChange' | 'network' | 'writeStdin' | 'tool';
 export type ApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 'cancel';
 
 export interface Approval {
@@ -122,6 +131,10 @@ export interface Approval {
   cwd?: string;
   /** Description / reason for the approval */
   reason?: string;
+  /** Tool requesting permission (Claude: Bash, Edit, Write, WebFetch, mcp__*, ...) */
+  toolName?: string;
+  /** Tool input, with long string values truncated (Claude) */
+  input?: Record<string, unknown>;
   /** Timestamp when approval was requested */
   requestedAt: number;
 }
@@ -179,13 +192,13 @@ export interface SessionProvider {
   interrupt(sessionId: string): Promise<InterruptResult>;
   createSession?(opts?: CreateSessionOptions): Promise<CreateSessionResult>;
   
-  /** Wait for an active turn to complete (Codex-specific) */
+  /** Wait for an active turn to complete */
   waitTurn?(sessionId: string, opts?: WaitTurnOptions): Promise<WaitTurnResult>;
   /** Add guidance to an in-flight turn without starting a new turn (Codex-specific) */
   steer?(sessionId: string, text: string): Promise<SteerResult>;
-  /** List pending approvals for a session (Codex-specific) */
+  /** List pending approvals for a session */
   listApprovals?(sessionId: string): Promise<ListApprovalsResult>;
-  /** Resolve a pending approval (Codex-specific) */
+  /** Resolve a pending approval */
   resolveApproval?(sessionId: string, approvalId: string, decision: ApprovalDecision): Promise<ResolveApprovalResult>;
   /** Set session metadata (name, tags) for easier discovery */
   setSessionMeta?(sessionId: string, meta: SetSessionMetaOptions): Promise<SetSessionMetaResult>;
