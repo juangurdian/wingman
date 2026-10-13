@@ -1,4 +1,21 @@
 import type { Request, Response, NextFunction } from 'express';
+import { timingSafeEqual } from 'node:crypto';
+
+/**
+ * Compare two strings using timing-safe comparison to prevent timing attacks.
+ * Handles length mismatch safely by comparing against a same-length buffer.
+ */
+export function secureCompare(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) {
+    const padded = Buffer.alloc(bufA.length, 0);
+    bufB.copy(padded, 0, 0, Math.min(bufB.length, bufA.length));
+    timingSafeEqual(bufA, padded);
+    return false;
+  }
+  return timingSafeEqual(bufA, bufB);
+}
 
 /**
  * Simple bearer-token middleware for the MCP HTTP endpoint.
@@ -17,7 +34,7 @@ export function bearerAuth(expectedToken: string) {
       return;
     }
     const token = match[1]!.trim();
-    if (!token || token !== expectedToken) {
+    if (!token || !secureCompare(token, expectedToken)) {
       res.status(403).json({ error: 'Invalid bearer token' });
       return;
     }
