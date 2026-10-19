@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -165,6 +165,84 @@ export function isCodexModelApiOnly(model: string): boolean {
   return CODEX_API_ONLY_MODELS.some(
     (m) => normalized === m.toLowerCase() || normalized.startsWith(`${m.toLowerCase()}-`)
   );
+}
+
+// Codex socket configuration (shared server mode)
+
+/**
+ * Default socket path for the Codex app-server control socket.
+ * Only exists when `codex app-server daemon start` is running.
+ * Note: The ChatGPT desktop app does NOT use daemon mode; it spawns stdio-based servers.
+ */
+export function defaultCodexSocketPath(): string {
+  const codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), '.codex');
+  return join(codexHome, 'app-server-control', 'app-server-control.sock');
+}
+
+/**
+ * Resolve the Codex app-server socket path.
+ * 
+ * Values:
+ * - undefined (default): spawn mode
+ * - "auto": auto-detect the control socket, fall back to spawn if not found
+ * - path: explicit socket path
+ * 
+ * Priority: WINGMAN_CODEX_SOCKET env > undefined (spawn mode)
+ */
+export function resolveCodexSocket(): string | undefined {
+  const env = process.env.WINGMAN_CODEX_SOCKET?.trim();
+  if (!env) return undefined;
+  
+  // "auto" means try the default path if it exists
+  if (env.toLowerCase() === 'auto') {
+    return defaultCodexSocketPath();
+  }
+  
+  return env;
+}
+
+/**
+ * Check if attach mode is requested (not whether it will succeed).
+ */
+export function useCodexAttachMode(): boolean {
+  const env = process.env.WINGMAN_CODEX_SOCKET?.trim();
+  return !!env;
+}
+
+/**
+ * Check if the Codex control socket exists (daemon is running).
+ */
+export function codexSocketExists(socketPath?: string): boolean {
+  const path = socketPath || defaultCodexSocketPath();
+  try {
+    return existsSync(path);
+  } catch {
+    return false;
+  }
+}
+
+// Claude Code configuration
+
+/**
+ * Whether to use Claude Code's stream-json mode for programmatic control.
+ * This enables injecting messages into Claude Code sessions.
+ * 
+ * When enabled, sessions are started with:
+ *   claude -p --input-format stream-json --output-format stream-json
+ * 
+ * Priority: WINGMAN_CLAUDE_STREAM_JSON env > false
+ */
+export function useClaudeStreamJson(): boolean {
+  const env = process.env.WINGMAN_CLAUDE_STREAM_JSON?.trim().toLowerCase();
+  return env === '1' || env === 'true';
+}
+
+/**
+ * Claude Code executable path.
+ * Priority: WINGMAN_CLAUDE_PATH env > 'claude' (uses PATH)
+ */
+export function resolveClaudePath(): string {
+  return process.env.WINGMAN_CLAUDE_PATH?.trim() || 'claude';
 }
 
 // Host identity configuration

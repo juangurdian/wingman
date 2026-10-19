@@ -1316,3 +1316,197 @@ describe('Codex graceful degradation', () => {
     expect(body.sessions[0].status).toBe('not_enabled');
   });
 });
+
+// Mock Claude provider with live/past sessions for state filter testing
+class MockClaudeWithLiveness implements SessionProvider {
+  readonly name = 'claude' as const;
+  
+  // Mix of live and past sessions
+  sessions: SessionSummary[] = [
+    {
+      id: 'live_session_1',
+      provider: 'claude',
+      name: 'Reddit agent',
+      preview: 'Active session',
+      status: 'idle',
+      live: true,
+      pid: 44184,
+      liveStatus: 'idle',
+      kind: 'interactive',
+      source: 'wingman',
+      updatedAt: Date.now() - 1000,
+    },
+    {
+      id: 'live_session_2',
+      provider: 'claude',
+      name: 'Build server',
+      preview: 'Another active session',
+      status: 'idle',
+      live: true,
+      pid: 12345,
+      liveStatus: 'busy',
+      kind: 'interactive',
+      source: 'discovered',
+      updatedAt: Date.now() - 2000,
+    },
+    {
+      id: 'past_session_1',
+      provider: 'claude',
+      name: 'Reddit agent old',
+      preview: 'Old session from 3 weeks ago',
+      status: 'idle',
+      live: false,
+      source: 'discovered',
+      updatedAt: Date.now() - 86400000 * 21, // 3 weeks ago
+    },
+    {
+      id: 'blocked_bg_job',
+      provider: 'claude',
+      name: 'Reddit agent',
+      preview: 'Blocked background job',
+      status: 'blocked',
+      live: false, // No registry entry = not live
+      liveStatus: 'blocked',
+      kind: 'background',
+      source: 'discovered',
+      updatedAt: Date.now() - 86400000 * 30, // Aug 30
+    },
+    {
+      id: 'past_session_2',
+      provider: 'claude',
+      name: 'Test session',
+      preview: 'Another past session',
+      status: 'idle',
+      live: false,
+      source: 'wingman',
+      updatedAt: Date.now() - 86400000 * 7, // 1 week ago
+    },
+  ];
+
+  async listSessions(opts?: { state?: string }): Promise<SessionSummary[]> {
+    // Provider-level filtering (though tool handler will also filter)
+    let result = [...this.sessions];
+    if (opts?.state === 'live') {
+      result = result.filter(s => s.live === true);
+    } else if (opts?.state === 'past') {
+      result = result.filter(s => s.live !== true);
+    }
+    // Sort: live first, then by updatedAt
+    result.sort((a, b) => {
+      if (a.live && !b.live) return -1;
+      if (!a.live && b.live) return 1;
+      return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+    });
+    return result;
+  }
+  
+  async readTranscript(sessionId: string): Promise<Transcript> {
+    return { sessionId, provider: 'claude', items: [] };
+  }
+  
+  async sendMessage(sessionId: string, _text: string): Promise<SendMessageResult> {
+    return { sessionId, turnId: 'turn_1', status: 'completed' };
+  }
+  
+  async interrupt(sessionId: string): Promise<InterruptResult> {
+    return { sessionId, turnId: 'turn_1', status: 'interrupted' };
+  }
+}
+
+describe('list_sessions state filter at tool handler level', () => {
+  let handlers: ReturnType<typeof createToolHandlers>;
+  let claude: MockClaudeWithLiveness;
+
+  beforeEach(() => {
+    claude = new MockClaudeWithLiveness();
+    handlers = createToolHandlers(registry(new MockCodex(), claude));
+  });
+
+  it('state="all" returns all sessions with live first', async () => {
+    const res = await handlers.list_sessions({ provider: 'claude', state: 'all' });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessions).toHaveLength(5);
+    
+    // Live sessions should come first
+    expect(body.sessions[0].live).toBe(true);
+    expect(body.sessions[1].live).toBe(true);
+    // Past sessions after
+    expect(body.sessions[2].live).toBe(false);
+    expect(body.sessions[3].live).toBe(false);
+    expect(body.sessions[4].live).toBe(false);
+  });
+
+  it('state="live" returns ONLY live sessions', async () => {
+    const res = await handlers.list_sessions({ provider: 'claude', state: 'live' });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessions).toHaveLength(2);
+    
+    // All returned sessions must be live
+    for (const session of body.sessions) {
+      expect(session.live).toBe(true);
+    }
+    
+    // Should include the live sessions
+    const ids = body.sessions.map((s: { id: string }) => s.id);
+    expect(ids).toContain('live_session_1');
+    expect(ids).toContain('live_session_2');
+    
+    // Should NOT include any past sessions
+    expect(ids).not.toContain('past_session_1');
+    expect(ids).not.toContain('past_session_2');
+    expect(ids).not.toContain('blocked_bg_job');
+  });
+
+  it('state="past" returns ONLY past sessions', async () => {
+    const res = await handlers.list_sessions({ provider: 'claude', state: 'past' });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessions).toHaveLength(3);
+    
+    // All returned sessions must be past (not live)
+    for (const session of body.sessions) {
+      expect(session.live).not.toBe(true);
+    }
+    
+    // Should include the past sessions
+    const ids = body.sessions.map((s: { id: string }) => s.id);
+    expect(ids).toContain('past_session_1');
+    expect(ids).toContain('past_session_2');
+    expect(ids).toContain('blocked_bg_job');
+    
+    // Should NOT include any live sessions
+    expect(ids).not.toContain('live_session_1');
+    expect(ids).not.toContain('live_session_2');
+  });
+
+  it('blocked background job without registry is NOT live', async () => {
+    const res = await handlers.list_sessions({ provider: 'claude' });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    const blockedJob = body.sessions.find((s: { id: string }) => s.id === 'blocked_bg_job');
+    
+    expect(blockedJob).toBeDefined();
+    expect(blockedJob.live).toBe(false);
+    expect(blockedJob.liveStatus).toBe('blocked');
+    expect(blockedJob.kind).toBe('background');
+    expect(blockedJob.name).toBe('Reddit agent'); // Same name as live session
+  });
+
+  it('default state (undefined) returns all with live first', async () => {
+    const res = await handlers.list_sessions({ provider: 'claude' });
+    expect(res.isError).toBeUndefined();
+    
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.sessions).toHaveLength(5);
+    
+    // Live sessions should come first
+    expect(body.sessions[0].live).toBe(true);
+    expect(body.sessions[1].live).toBe(true);
+  });
+});

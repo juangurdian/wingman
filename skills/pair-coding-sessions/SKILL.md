@@ -68,8 +68,12 @@ Speak as the user when configuring their accounts; never paste the token into pu
 After pairing, prefer these tools (in order):
 
 1. `list_sessions` — `{ "provider": "codex" }` or `{ "provider": "claude" }` or omit for both
+   - Optional `state` filter: `"live"` | `"past"` | `"all"` (default: `"all"`, live first)
+   - Claude sessions include `live`, `pid`, `liveStatus`, `kind` fields
 2. `read_transcript` — `{ "provider": "...", "session_id": "...", "limit": 30 }`
 3. `send_message` — `{ "provider": "...", "session_id": "...", "text": "..." }`
+   - For live Claude sessions: uses inbox injection (no fork)
+   - For past Claude sessions: uses SDK resume (may fork if also open interactively)
 4. `interrupt` — if a turn is stuck
 5. `create_session` — `{ "provider": "...", "cwd": "...", "prompt": "...", "model": "..." }`
 
