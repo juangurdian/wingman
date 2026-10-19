@@ -190,3 +190,12 @@ export function resolveHostName(): string {
   if (idEnv) return idEnv;
   return hostname();
 }
+
+/**
+ * Mask a token for display (show first 4 chars + ellipsis).
+ * Used to avoid exposing full tokens in logs/output.
+ */
+export function maskToken(token: string): string {
+  if (token.length <= 4) return '****';
+  return `${token.slice(0, 4)}…`;
+}

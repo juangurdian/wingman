@@ -19,6 +19,7 @@ import {
   resolveHostId,
   resolveHostName,
   resolveCodexModel,
+  maskToken,
   type BridgeConfig,
 } from './config.js';
 import { startMcpServer } from './mcp/server.js';
@@ -28,6 +29,7 @@ function parseArgs(argv: string[]) {
   let host: string | undefined;
   let reuse = false;
   let newToken = false;
+  let showToken = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--port' && argv[i + 1]) {
@@ -38,17 +40,19 @@ function parseArgs(argv: string[]) {
       reuse = true;
     } else if (a === '--new-token') {
       newToken = true;
+    } else if (a === '--show-token') {
+      showToken = true;
     } else if (a === '--help' || a === '-h') {
       printHelp();
       process.exit(0);
     }
   }
-  return { port, host, reuse, newToken };
+  return { port, host, reuse, newToken, showToken };
 }
 
 function printHelp() {
-  console.log(`Usage: wingman-pair [--port PORT] [--host HOST] [--new-token]
-       npx wingman-mcp [--port PORT] [--host HOST] [--new-token]
+  console.log(`Usage: wingman-pair [--port PORT] [--host HOST] [--new-token] [--show-token]
+       npx wingman-mcp [--port PORT] [--host HOST] [--new-token] [--show-token]
 
 Dual-provider MCP bridge for Codex and Claude Code.
 
@@ -57,6 +61,7 @@ Options:
   --host HOST           Bind host (default 127.0.0.1, or WINGMAN_HOST env)
   --new-token           Generate a fresh token (default: reuse existing)
   --reuse-token         Explicitly reuse existing token (now the default)
+  --show-token          Show full token in output (default: masked for security)
 
 Environment:
   CODEX_MOCK=1          Use in-memory Codex mock (no codex binary)
@@ -90,13 +95,19 @@ function getMockModeDisplay(): string {
   return 'no — real Codex + Claude providers';
 }
 
-function printPairInstructions(cfg: BridgeConfig, localUrl: string) {
+function printPairInstructions(cfg: BridgeConfig, localUrl: string, showToken: boolean) {
   const tunnelHint = `https://YOUR-TUNNEL-HOST/mcp`;
-  const authHeader = `Bearer ${cfg.token}`;
+  const displayToken = showToken ? cfg.token : maskToken(cfg.token);
+  const authHeader = `Bearer ${displayToken}`;
   const mockDisplay = getMockModeDisplay();
   const hostId = cfg.hostId ?? resolveHostId();
   const hostName = cfg.hostName ?? resolveHostName();
   const codexModel = resolveCodexModel();
+  const cfgPath = configPath();
+
+  const tokenNote = showToken
+    ? ''
+    : `  (masked — full token in ${cfgPath}, or use --show-token)`;
 
   console.log(`
 ╔══════════════════════════════════════════════════════════════════╗
@@ -104,9 +115,9 @@ function printPairInstructions(cfg: BridgeConfig, localUrl: string) {
 ║           Dual-provider bridge: Codex + Claude Code              ║
 ╚══════════════════════════════════════════════════════════════════╝
 
-Config written: ${configPath()}
+Config written: ${cfgPath}
 Local MCP URL:  ${localUrl}
-Token:          ${cfg.token}
+Token:          ${displayToken}${tokenNote}
 Mock mode:      ${mockDisplay}
 Host ID:        ${hostId}
 Host Name:      ${hostName}${codexModel ? `\nCodex Model:    ${codexModel} (override active)` : ''}
@@ -152,11 +163,11 @@ MCP SERVER CONFIG (for Grok Bot / Cursor / other MCP hosts)
   url:           ${tunnelHint}
   Authorization: ${authHeader}
 
-Example config block:
+Example config block (use full token from ${cfgPath}):
   {
     "name": "wingman",
     "url": "<YOUR_TUNNEL_URL>/mcp",
-    "headers": { "Authorization": "Bearer ${cfg.token}" }
+    "headers": { "Authorization": "Bearer <TOKEN>" }
   }
 
 ────────────────────────────────────────────────────────────────────
@@ -218,7 +229,7 @@ async function main() {
   saveConfig(cfg);
 
   const localUrl = mcpUrl(host, port, '/mcp');
-  printPairInstructions(cfg, localUrl);
+  printPairInstructions(cfg, localUrl, args.showToken);
 
   const server = await startMcpServer({
     host,
