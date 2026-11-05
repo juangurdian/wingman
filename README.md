@@ -5,7 +5,6 @@
 Dual-provider: Codex (app-server) + Claude Code (Agent SDK).
 
 [![CI](https://github.com/juangurdian/wingman/actions/workflows/ci.yml/badge.svg)](https://github.com/juangurdian/wingman/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/wingman-mcp.svg)](https://www.npmjs.com/package/wingman-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](tsconfig.json)
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -22,20 +21,7 @@ Think of it as a radio link between the bot in the cloud and the agent on your d
 
 ## Quickstart
 
-### Option 1: npx (recommended)
-
-```bash
-# Run directly without install — try it now!
-npx wingman-mcp
-
-# Or install globally for repeated use
-npm install -g wingman-mcp
-wingman-pair
-```
-
-Set `CODEX_MOCK=1` or `CLAUDE_MOCK=1` for mock mode (no real agent required).
-
-### Option 2: Clone (for contributors)
+### Clone and run (recommended)
 
 ```bash
 git clone https://github.com/juangurdian/wingman.git
@@ -43,6 +29,12 @@ cd wingman
 npm install
 npm run pair
 ```
+
+Set `CODEX_MOCK=1` or `CLAUDE_MOCK=1` for mock mode (no real agent required).
+
+> **npm status:** the `wingman-mcp` package is not published to npm yet, so `npx wingman-mcp` and
+> `npm install -g wingman-mcp` will not work today. Use the clone-and-run steps above. This section
+> will switch back to `npx` once the package is published.
 
 ### After pairing
 
@@ -185,7 +177,7 @@ By default, Wingman does **not** override the Codex model — it uses whatever i
 **Via environment variable**:
 ```bash
 export WINGMAN_CODEX_MODEL="your-preferred-model"
-npx wingman-mcp
+npm run pair
 ```
 
 **Via create_session argument** (per-session):
@@ -353,7 +345,7 @@ Claude sessions are stored by the Agent SDK in `~/.claude/projects/<project-key>
 
 ## Scripts & CLI
 
-When installed globally (`npm i -g wingman-mcp`) or via npx:
+From a checkout, run these through `npm run` (the bare commands below are what a global npm install will provide once the package is published):
 
 | Command | Purpose |
 |---------|---------|

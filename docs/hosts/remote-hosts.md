@@ -30,13 +30,13 @@ Grok Bot is the primary use case Wingman was built for. Here's the complete setu
 
 ```bash
 # Quick start (recommended for first-time setup)
-CODEX_MOCK=1 npx wingman-mcp
+CODEX_MOCK=1 npm run pair
 
 # Real mode with Codex
-npx wingman-mcp
+npm run pair
 
 # Real mode with Claude
-npx wingman-mcp
+npm run pair
 ```
 
 Note the printed **token** and local URL.
@@ -190,7 +190,7 @@ Wingman binds to `127.0.0.1` by default — it's not directly accessible from ot
 | Issue | Cause | Solution |
 |-------|-------|----------|
 | **401 Unauthorized** | Wrong/missing token | Check Authorization header value |
-| **502 Bad Gateway** | Wingman not running | Start Wingman with `npx wingman-mcp` |
+| **502 Bad Gateway** | Wingman not running | Start Wingman with `npm run pair` |
 | **Connection timeout** | Tunnel not running | Restart tunnel; check `wingman-tunnel` |
 | **No sessions found** | Wrong provider or no sessions | Create a session first; check provider arg |
 | **Interrupt failed** | No active turn or not Wingman-owned | Only works for turns started via Wingman |
@@ -201,17 +201,17 @@ Control Wingman behavior via environment:
 
 ```bash
 # Change port (default: 3847)
-WINGMAN_PORT=4000 npx wingman-mcp
+WINGMAN_PORT=4000 npm run pair
 
 # Use specific token
-WINGMAN_TOKEN=my-secret-token npx wingman-mcp
+WINGMAN_TOKEN=my-secret-token npm run pair
 
 # Mock mode (no real agents)
-CODEX_MOCK=1 npx wingman-mcp
-CLAUDE_MOCK=1 npx wingman-mcp
+CODEX_MOCK=1 npm run pair
+CLAUDE_MOCK=1 npm run pair
 
 # Auth-free health checks (for tunnel monitors)
-WINGMAN_HEALTHZ_AUTH_FREE=1 npx wingman-mcp
+WINGMAN_HEALTHZ_AUTH_FREE=1 npm run pair
 ```
 
 ## Related Guides

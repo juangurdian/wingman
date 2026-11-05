@@ -12,7 +12,7 @@ Cursor IDE supports remote MCP servers via HTTP URL and custom headers. This mak
 
 ## Prerequisites
 
-1. **Wingman running** — `npx wingman-mcp` or `npm run pair` in a Wingman checkout
+1. **Wingman running** — `npm run pair` or `npm run pair` in a Wingman checkout
 2. **Tunnel active** — Cursor cannot reach `127.0.0.1`; you need a public URL
 3. **Token ready** — Printed when Wingman starts
 
@@ -20,13 +20,13 @@ Cursor IDE supports remote MCP servers via HTTP URL and custom headers. This mak
 
 ```bash
 # Quick start (mock mode, no agent binary needed)
-CODEX_MOCK=1 npx wingman-mcp
+CODEX_MOCK=1 npm run pair
 
 # Or real mode with Codex
-npx wingman-mcp
+npm run pair
 
 # Or real mode with Claude
-npx wingman-mcp
+npm run pair
 ```
 
 Note the printed token and local URL (default: `http://127.0.0.1:3847/mcp`).
@@ -151,7 +151,7 @@ See the main [README](../../README.md) for full tool documentation.
 |-------|----------|
 | **Connection refused** | Check tunnel is running and URL is correct |
 | **401 Unauthorized** | Verify token in Authorization header |
-| **502 Bad Gateway** | Wingman may not be running; restart with `npx wingman-mcp` |
+| **502 Bad Gateway** | Wingman may not be running; restart with `npm run pair` |
 | **Tools not appearing** | Refresh MCP servers in Cursor settings |
 | **Timeout errors** | Long model turns are normal; use `wait_turn` with appropriate timeout |
 

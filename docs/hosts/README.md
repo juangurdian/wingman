@@ -53,7 +53,7 @@ Running Wingman on multiple machines (e.g., Windows + Mac) with host labels so M
 
 All guides follow the same basic flow:
 
-1. **Start Wingman**: `npx wingman-mcp` (mock mode: `CODEX_MOCK=1` or `CLAUDE_MOCK=1`)
+1. **Start Wingman**: `npm run pair` (mock mode: `CODEX_MOCK=1` or `CLAUDE_MOCK=1`)
 2. **Create tunnel**: `tailscale funnel 3847` or `cloudflared tunnel --url http://127.0.0.1:3847`
 3. **Configure host**: Add MCP server with URL + bearer token
 4. **Test**: `list_sessions` → `create_session` → `read_transcript`
@@ -63,7 +63,7 @@ All guides follow the same basic flow:
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|
 | 401 error | Wrong token | Copy token from Wingman startup output |
-| 502 error | Wingman not running | Start with `npx wingman-mcp` |
+| 502 error | Wingman not running | Start with `npm run pair` |
 | Connection refused | Tunnel down | Restart tunnel |
 | Host can't add HTTP server | Stdio-only host | See [Claude Desktop](claude-desktop.md) workarounds |
 

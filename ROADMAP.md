@@ -58,7 +58,7 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 
 | Feature | Description |
 |---------|-------------|
-| `npx wingman-mcp` install | ✅ Shipped — run `npx wingman-mcp` or `npm i -g wingman-mcp` |
+| `npx wingman-mcp` install | ⏳ Package is ready (v0.2.0) but not yet published to npm. Use clone-and-run (`npm run pair`) for now |
 | Durable tunnel helpers | ✅ Shipped — `wingman-tunnel` CLI with ranked recommendations |
 | Session tags/names | ✅ Shipped — `create_session` accepts `name`/`tags`; `set_session_meta` tool for updates |
 | Configurable timeouts | ✅ Shipped — `CLAUDE_SEND_TIMEOUT_MS`, `WINGMAN_WAIT_TURN_TIMEOUT_MS`, `WINGMAN_WAIT_TURN_POLL_MS` |

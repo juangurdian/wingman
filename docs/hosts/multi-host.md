@@ -37,7 +37,7 @@ On **Machine 1** (e.g., Pearlwolf Windows):
 ```bash
 export WINGMAN_HOST_ID="pearlwolf"
 export WINGMAN_HOST_NAME="Pearlwolf Windows"
-npx wingman-mcp
+npm run pair
 ```
 
 On **Machine 2** (e.g., MacBook Pro):
@@ -45,7 +45,7 @@ On **Machine 2** (e.g., MacBook Pro):
 ```bash
 export WINGMAN_HOST_ID="macbook"
 export WINGMAN_HOST_NAME="MacBook Pro"
-npx wingman-mcp
+npm run pair
 ```
 
 ### 2. Create Tunnels for Each Machine
@@ -225,7 +225,7 @@ This is tracked in the [ROADMAP](../../ROADMAP.md) under "Later". For now, use m
 
 Check your Wingman version supports host identity (`>=0.2.0`). Run:
 ```bash
-npx wingman-mcp --version
+npm pkg get version
 ```
 
 ### Host shows hostname instead of custom name
@@ -234,7 +234,7 @@ Make sure env vars are set before starting Wingman:
 ```bash
 export WINGMAN_HOST_ID="myhost"
 export WINGMAN_HOST_NAME="My Host Name"
-npx wingman-mcp
+npm run pair
 ```
 
 ### Can't connect to both machines

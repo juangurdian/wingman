@@ -12,7 +12,7 @@ Muse Code supports MCP servers via streamable HTTP transport with bearer authent
 
 ## Prerequisites
 
-1. **Wingman running** — `npx wingman-mcp` or `npm run pair` in a Wingman checkout
+1. **Wingman running** — `npm run pair` or `npm run pair` in a Wingman checkout
 2. **Tunnel active** — Muse Code cannot reach `127.0.0.1`; you need a public URL
 3. **Token ready** — Printed when Wingman starts
 4. **Muse Code installed** — See [Muse Code installation docs](https://dev.meta.ai/docs/muse-code/installation/)
@@ -21,13 +21,13 @@ Muse Code supports MCP servers via streamable HTTP transport with bearer authent
 
 ```bash
 # Quick start (mock mode, no agent binary needed)
-CODEX_MOCK=1 npx wingman-mcp
+CODEX_MOCK=1 npm run pair
 
 # Or real mode with Codex
-npx wingman-mcp
+npm run pair
 
 # Or real mode with Claude
-npx wingman-mcp
+npm run pair
 ```
 
 Note the printed token and local URL (default: `http://127.0.0.1:3847/mcp`).
@@ -217,7 +217,7 @@ All hosts connect to the same Wingman tunnel, sharing access to local Codex and 
 
 Both Muse Code and Grok Bot can share a single Wingman pair:
 
-1. Start Wingman once: `npx wingman-mcp`
+1. Start Wingman once: `npm run pair`
 2. Create one tunnel: `tailscale funnel 3847`
 3. Register the same URL + token in both:
    - Muse Code's `~/.config/muse/settings.json`
@@ -270,7 +270,7 @@ Muse Code has built-in "session messaging" for communication between Muse instan
 | **MCP server not appearing** | Check `mcp_servers` syntax; restart Muse Code |
 | **Connection refused** | Check tunnel is running and URL is correct |
 | **401 Unauthorized** | Verify token in Authorization header |
-| **502 Bad Gateway** | Wingman may not be running; restart with `npx wingman-mcp` |
+| **502 Bad Gateway** | Wingman may not be running; restart with `npm run pair` |
 | **Timeout errors** | Long model turns are normal; use `wait_turn` with appropriate timeout |
 | **`mode: "required"` blocking startup** | Change to `"optional"` or ensure Wingman is running |
 
