@@ -74,6 +74,12 @@ Environment:
   WINGMAN_CODEX_MODEL   Override Codex model for Wingman sessions (optional)
   WINGMAN_CLAUDE_MODEL  Optional Claude model override (unset inherits the session model)
   WINGMAN_CLAUDE_MAX_TURNS  Claude agent turns per query (default 50)
+  WINGMAN_ALLOWED_PATHS Allowlisted project roots, split on the OS path delimiter
+  WINGMAN_CALLER        Caller id for the allowlist (default "default")
+
+Windows service: wingman-task install
+  Registers a scheduled task that starts at logon and boot, restarts after a crash,
+  and does not pass --new-token, so the bearer token stays stable.
 
 Real mode:
   Codex:  requires \`codex\` on PATH (uses \`codex app-server\` JSON-RPC)

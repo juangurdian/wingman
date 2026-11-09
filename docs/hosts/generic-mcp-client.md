@@ -56,7 +56,16 @@ Accept: application/json
 GET https://YOUR-TUNNEL-URL/healthz
 ```
 
-Returns `{"ok":true,"service":"wingman"}` when Wingman is running.
+Returns `{"ok":true,"service":"wingman","state":"server_up"}` when Wingman is running. `/status` returns the same body.
+
+If this request fails, do not treat every error as "fetch failed":
+
+- Cloudflare 1033 or HTTP 530: the tunnel is down.
+- HTTP 502 or 504: the tunnel is up and Wingman is down.
+- DNS failure, timeout, or `fetch failed` with no status: the host is unreachable.
+- HTTP 401 or 403: Wingman is up and the token was rejected.
+
+On the machine, `wingman-tunnel diagnose` separates those cases using the local port and the heartbeat file. See [docs/operations.md](../operations.md).
 
 > **Note**: By default, `/healthz` requires bearer auth. Set `WINGMAN_HEALTHZ_AUTH_FREE=1` to allow unauthenticated health checks (useful for load balancers and monitors).
 

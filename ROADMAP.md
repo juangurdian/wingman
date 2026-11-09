@@ -63,6 +63,11 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | Session tags/names | ✅ Shipped — `create_session` accepts `name`/`tags`; `set_session_meta` tool for updates |
 | Configurable timeouts | ✅ Shipped — `CLAUDE_SEND_TIMEOUT_MS`, `WINGMAN_WAIT_TURN_TIMEOUT_MS`, `WINGMAN_WAIT_TURN_POLL_MS` |
 | Health endpoint auth toggle | ✅ Shipped — `WINGMAN_HEALTHZ_AUTH_FREE=1` for monitors/tunnels |
+| Failure classes | ✅ Shipped. `get_bridge_status`, `/status`, and `wingman-tunnel diagnose` separate host offline, tunnel down, and server down |
+| Windows scheduled task | ✅ Shipped. `wingman-task install` restarts on crash and at boot without rotating the token |
+| Headless runs | ✅ Shipped. `start_codex_exec` (no `--full-auto`) and `run_headless`, polled with `get_run` |
+| Session status and stop | ✅ Shipped. `get_status` (git HEAD, dirty files, pending prompt) and `stop` with RSS |
+| Caller path allowlist | ✅ Shipped. `WINGMAN_ALLOWED_PATHS` and `~/.wingman/allowlist.json` |
 
 ### Later
 
@@ -105,7 +110,7 @@ Wingman intentionally does **not** do:
 - **TTY hijack** — We do not attach to arbitrary terminal processes you started elsewhere
 - **Browser automation of claude.ai** — Wingman uses the official Claude Agent SDK, not browser puppeteering
 - **Multi-agent IDE** — Wingman is a bridge, not a replacement for your editor or IDE
-- **Persistent daemon** — Wingman runs when you pair; no system service / always-on process
+- **Linux service unit**: Wingman runs when you pair. On Windows, `wingman-task install` can register a scheduled task that restarts it. This repo does not ship a systemd unit.
 - **Secrets management** — Bring your own API keys; Wingman only generates its bearer token
 - **Auto-approve sandbox prompts**: Wingman does not silently approve tool calls. Codex and Claude prompts show up in `list_approvals`. An unanswered Claude prompt is denied.
 - **Replace Codex/Claude CLI** — Wingman wraps the official SDKs; use the CLIs directly for full features

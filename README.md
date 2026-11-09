@@ -161,6 +161,12 @@ flowchart LR
 | `resolve_approval` | `provider`, `session_id`, `approval_id`, `decision` | Accept, accept for the session, decline, or cancel a Codex or Claude approval. |
 | `set_session_meta` | `provider`, `session_id`, `name?`, `tags?` | Set session name/tags for easier discovery (Wingman-owned sessions) |
 | `export_transcript` | `provider`, `session_id`, `format`, `limit?` | Export transcript as `markdown` \| `json`; returns content + writes to `~/.wingman/exports/` |
+| `get_bridge_status` | (none) | This process is up: pid, uptime, and how to read a later failure. See [Operations](docs/operations.md). |
+| `get_status` | `provider`, `session_id`, `caller?` | `idle`, `working`, `awaiting_approval`, or `errored`, plus last activity, pending prompt, model, git HEAD, dirty files, and RSS |
+| `start_codex_exec` | `prompt`, `cwd`, `sandbox?`, `model?`, `resume_session_id?` | Headless `codex exec` (CLI 0.166). No `--full-auto`. Prompt goes to stdin. Returns a run id. |
+| `run_headless` | `prompt`, `cwd?`, `session_id?`, `max_turns?`, `permission_mode?`, `model?` | Long Claude run. Prompt is an SDK string, not a PowerShell command. Returns a run id. |
+| `get_run` | `run_id`, `tail_lines?` | Poll a headless run: status, exit code, output tail, RSS |
+| `stop` | `session_id?`, `run_id?`, `provider?`, `force?` | Interrupt a session or kill a headless run. Reports memory use. |
 
 ### create_session behavior
 
@@ -342,6 +348,8 @@ The Claude provider uses the bundled Agent SDK binary automatically. No separate
 |----------|---------|-------------|
 | `WINGMAN_HOST_ID` | hostname | Machine identifier for multi-host setups |
 | `WINGMAN_HOST_NAME` | hostname | Human-friendly host name for display |
+| `WINGMAN_CALLER` | `default` | Caller id used when a tool omits `caller` |
+| `WINGMAN_ALLOWED_PATHS` | unset | Project roots this process may touch, split on the OS path delimiter (`:` or `;`) |
 
 See [docs/hosts/multi-host.md](docs/hosts/multi-host.md) for running Wingman on multiple machines.
 
@@ -393,7 +401,8 @@ From a checkout, run these through `npm run` (the bare commands below are what a
 |---------|---------|
 | `wingman-pair` / `wingman-mcp` | Generate token, save config, start MCP, print pair instructions |
 | `wingman-doctor` | Check environment: Node version, config, port, Claude SDK / Codex binary |
-| `wingman-tunnel` | Detect tunnel tools, print ranked setup commands, persist tunnel state |
+| `wingman-tunnel` | Detect tunnel tools, print ranked setup commands, persist tunnel state. `diagnose` and `classify` tell tunnel failures apart. |
+| `wingman-task` | Install a Windows scheduled task that restarts on crash and reuses the bearer token |
 
 For local development:
 
@@ -402,6 +411,7 @@ For local development:
 | `npm run pair` | Same as `wingman-pair` (uses tsx) |
 | `npm run doctor` | Same as `wingman-doctor` |
 | `npm run tunnel` | Same as `wingman-tunnel` |
+| `npm run task` | Same as `wingman-task` |
 | `npm run dev` | Start MCP only (needs existing config/token) |
 | `npm run build` | Compile TypeScript → `dist/` |
 | `npm test` | Vitest unit tests (mocked providers) |
@@ -439,10 +449,20 @@ WINGMAN_HEALTHZ_AUTH_FREE=1 npm run pair
 
 **Security tradeoff**: An auth-free `/healthz` reveals that Wingman is running but exposes no secrets, session data, or MCP functionality. The `/mcp` endpoint always requires bearer auth.
 
-Example response:
+Example response while the process is alive:
 ```json
-{ "ok": true, "service": "wingman" }
+{ "ok": true, "service": "wingman", "state": "server_up", "pid": 123, "uptimeMs": 1000 }
 ```
+
+`/status` returns the same body. If the call fails, the client has to classify the error itself. `get_bridge_status` repeats the rules, and `wingman-tunnel diagnose` can see them from the machine. Full table: [docs/operations.md](docs/operations.md).
+
+| What the client sees | State |
+|---|---|
+| HTTP 200 from `/healthz` | `server_up` |
+| HTTP 401 or 403 | `auth_rejected` (Wingman is up) |
+| Cloudflare 1033 or HTTP 530 | `tunnel_down` |
+| HTTP 502 or 504 | `server_down` (tunnel up, Wingman down) |
+| `fetch failed`, DNS error, or timeout with no HTTP status | `host_offline` |
 
 ## Doctor / Health Check
 

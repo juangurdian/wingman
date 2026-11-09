@@ -262,9 +262,24 @@ export interface SendMessageOptions {
   binding?: 'new' | 'resume';
 }
 
+export interface SessionActivity {
+  running: boolean;
+  approvalCount: number;
+  error?: string;
+  /** Last prompt Wingman sent. Pending only while running or waiting on approval. */
+  prompt?: string;
+  model?: string;
+  lastActivityAt?: number;
+  /** Process that owns the work. Shared for Codex app-server and in-process Claude. */
+  pid?: number;
+  sharedProcess: boolean;
+}
+
 export interface SessionProvider {
   readonly name: ProviderName;
   listSessions(): Promise<SessionSummary[]>;
+  /** Live state used by get_status. Optional so stubs and Muse can omit it. */
+  activity?(sessionId: string): SessionActivity;
   getSession?(sessionId: string): Promise<SessionDetail | null>;
   readTranscript(sessionId: string, limit?: number): Promise<Transcript>;
   sendMessage(sessionId: string, text: string, opts?: SendMessageOptions): Promise<SendMessageResult>;
