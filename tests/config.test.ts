@@ -8,7 +8,16 @@ import {
   isCodexModelApiOnly,
   resolveHostId,
   resolveHostName,
+  resolveClaudeMaxTurns,
+  resolveClaudePermissionMode,
+  resolveClaudeModelOverride,
+  resolveClaudeToolList,
+  resolveClaudeApprovalTimeoutMs,
+  splitPathList,
   CLAUDE_SEND_TIMEOUT_MS_DEFAULT,
+  CLAUDE_MAX_TURNS_DEFAULT,
+  CLAUDE_PERMISSION_MODE_DEFAULT,
+  CLAUDE_APPROVAL_TIMEOUT_MS_DEFAULT,
   WINGMAN_WAIT_TURN_TIMEOUT_MS_DEFAULT,
   WINGMAN_WAIT_TURN_POLL_MS_DEFAULT,
   CODEX_API_ONLY_MODELS,
@@ -74,6 +83,71 @@ describe('Configurable timeouts', () => {
       vi.stubEnv('WINGMAN_WAIT_TURN_POLL_MS', '1000');
       expect(resolveWaitTurnPollMs()).toBe(1000);
     });
+  });
+});
+
+describe('Claude turn configuration', () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('defaults max turns high, not to 1', () => {
+    expect(resolveClaudeMaxTurns()).toBe(CLAUDE_MAX_TURNS_DEFAULT);
+    expect(CLAUDE_MAX_TURNS_DEFAULT).toBeGreaterThan(1);
+  });
+
+  it('prefers an explicit max turn budget over the env value', () => {
+    vi.stubEnv('WINGMAN_CLAUDE_MAX_TURNS', '12');
+    expect(resolveClaudeMaxTurns(7)).toBe(7);
+    expect(resolveClaudeMaxTurns()).toBe(12);
+  });
+
+  it('caps an excessive max turn budget', () => {
+    expect(resolveClaudeMaxTurns(10_000)).toBe(500);
+    vi.stubEnv('WINGMAN_CLAUDE_MAX_TURNS', '9999');
+    expect(resolveClaudeMaxTurns()).toBe(500);
+  });
+
+  it('ignores an invalid permission mode and an invalid max turn value', () => {
+    vi.stubEnv('WINGMAN_CLAUDE_PERMISSION_MODE', 'yolo');
+    vi.stubEnv('WINGMAN_CLAUDE_MAX_TURNS', 'many');
+    expect(resolveClaudePermissionMode()).toBe(CLAUDE_PERMISSION_MODE_DEFAULT);
+    expect(resolveClaudePermissionMode('acceptEdits')).toBe('acceptEdits');
+    expect(resolveClaudeMaxTurns()).toBe(CLAUDE_MAX_TURNS_DEFAULT);
+  });
+
+  it('does not invent a Claude model when no override is set', () => {
+    expect(resolveClaudeModelOverride()).toBeUndefined();
+    expect(resolveClaudeModelOverride('  ')).toBeUndefined();
+    expect(resolveClaudeModelOverride('  from-call  ')).toBe('from-call');
+  });
+
+  it('reads comma-separated tool lists and leaves them unset when empty', () => {
+    expect(resolveClaudeToolList(undefined, 'WINGMAN_CLAUDE_ALLOWED_TOOLS')).toBeUndefined();
+    vi.stubEnv('WINGMAN_CLAUDE_ALLOWED_TOOLS', ' Read, Bash ,');
+    expect(resolveClaudeToolList(undefined, 'WINGMAN_CLAUDE_ALLOWED_TOOLS')).toEqual(['Read', 'Bash']);
+    expect(resolveClaudeToolList(['Edit'], 'WINGMAN_CLAUDE_ALLOWED_TOOLS')).toEqual(['Edit']);
+  });
+
+  it('defaults the approval timeout and honors an override', () => {
+    expect(resolveClaudeApprovalTimeoutMs()).toBe(CLAUDE_APPROVAL_TIMEOUT_MS_DEFAULT);
+    vi.stubEnv('WINGMAN_CLAUDE_APPROVAL_TIMEOUT_MS', '2500');
+    expect(resolveClaudeApprovalTimeoutMs()).toBe(2500);
+    expect(resolveClaudeApprovalTimeoutMs(80)).toBe(80);
+  });
+
+  it('splits path lists on the given delimiter so Windows drive letters stay intact', () => {
+    expect(splitPathList('C:\\Users\\a;D:\\work\\repo', ';')).toEqual([
+      'C:\\Users\\a',
+      'D:\\work\\repo',
+    ]);
+    expect(splitPathList('/home/a:/home/b', ':')).toEqual(['/home/a', '/home/b']);
+    expect(splitPathList(undefined)).toBeUndefined();
+    expect(splitPathList('   ')).toBeUndefined();
   });
 });
 

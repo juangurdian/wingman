@@ -10,7 +10,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { configDir, loadConfig, resolvePort, resolveHost } from './config.js';
+import {
+  classifyRemoteFailure,
+  diagnoseLocal,
+  heartbeatAgeMs,
+  readHeartbeat,
+} from './reachability.js';
 
 export interface TunnelTool {
   name: string;
@@ -367,6 +375,55 @@ export function recordTunnelUrl(url: string, tunnelType?: TunnelRecommendation):
   console.log(`[wingman] Tunnel URL recorded: ${url}`);
 }
 
+export function probeHttp(url: string, timeoutMs = 3000): Promise<{ status?: number; body?: string; error?: string }> {
+  return new Promise((resolve) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch (err) {
+      resolve({ error: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    const request = parsed.protocol === 'https:' ? httpsRequest : httpRequest;
+    const req = request(
+      parsed,
+      { method: 'GET', timeout: timeoutMs },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer | string) => {
+          chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+        });
+        res.on('end', () => {
+          resolve({
+            status: res.statusCode,
+            body: Buffer.concat(chunks).toString('utf8').slice(0, 2000),
+          });
+        });
+      },
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ error: 'ETIMEDOUT' });
+    });
+    req.on('error', (err) => resolve({ error: err.message }));
+    req.end();
+  });
+}
+
+export async function diagnoseTunnel(opts: { publicUrl?: string; localUrl: string }): Promise<unknown> {
+  const local = await probeHttp(opts.localUrl);
+  const remote = opts.publicUrl ? await probeHttp(opts.publicUrl) : undefined;
+  const beat = readHeartbeat();
+  return diagnoseLocal({
+    localHttpStatus: local.status,
+    localError: local.error,
+    heartbeatAgeMs: heartbeatAgeMs(beat),
+    publicStatus: remote?.status,
+    publicError: remote?.error,
+    publicBody: remote?.body,
+  });
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
@@ -377,9 +434,51 @@ Options:
   --help, -h          Show this help message
   --record-url URL    Record a tunnel URL for future reference
   --show-state        Show saved tunnel state
+  diagnose            Probe local Wingman and an optional public URL
+  classify            Classify a remote error without a live server
+
+diagnose options:
+  --url URL           Public tunnel URL to probe (healthz path is added if missing)
+  --local URL         Local health URL (default http://127.0.0.1:<port>/healthz)
+
+classify options:
+  --status N          HTTP status from the failed client call
+  --error TEXT        Client error message, such as "fetch failed"
+  --body TEXT         Response body, such as a Cloudflare 1033 page
 
 Detects available tunnel tools and prints recommended commands.
+A failed MCP call cannot ask Wingman what broke. Use diagnose on the machine,
+or classify the HTTP error on the client.
 `);
+    return;
+  }
+
+  if (args[0] === 'classify') {
+    const statusIdx = args.indexOf('--status');
+    const errorIdx = args.indexOf('--error');
+    const bodyIdx = args.indexOf('--body');
+    const status = statusIdx >= 0 ? Number(args[statusIdx + 1]) : undefined;
+    const report = classifyRemoteFailure({
+      httpStatus: status !== undefined && Number.isFinite(status) ? status : undefined,
+      errorMessage: errorIdx >= 0 ? args[errorIdx + 1] : undefined,
+      body: bodyIdx >= 0 ? args[bodyIdx + 1] : undefined,
+    });
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (args[0] === 'diagnose') {
+    const config = loadConfig();
+    const port = config?.port ?? resolvePort();
+    const urlIdx = args.indexOf('--url');
+    const localIdx = args.indexOf('--local');
+    let publicUrl = urlIdx >= 0 ? args[urlIdx + 1] : undefined;
+    if (publicUrl && !/\/healthz$/.test(publicUrl)) {
+      publicUrl = `${publicUrl.replace(/\/$/, '')}/healthz`;
+    }
+    const localUrl = localIdx >= 0 ? args[localIdx + 1] : `http://127.0.0.1:${port}/healthz`;
+    const report = await diagnoseTunnel({ publicUrl, localUrl: localUrl! });
+    console.log(JSON.stringify(report, null, 2));
     return;
   }
 

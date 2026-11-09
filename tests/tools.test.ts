@@ -14,6 +14,7 @@ import type {
   CreateSessionResult,
   ProviderRegistry,
   ProviderName,
+  SendMessageOptions,
 } from '../src/providers/types.js';
 
 class MockCodex implements SessionProvider {
@@ -203,6 +204,7 @@ class MockClaudeEnabled implements SessionProvider {
     { role: 'assistant', text: 'Hi! How can I help?', turnId: 'turn_1' },
   ];
   activeTurnId?: string;
+  lastSend?: { sessionId: string; text: string; opts?: SendMessageOptions };
 
   async listSessions(): Promise<SessionSummary[]> {
     return this.sessions;
@@ -216,15 +218,28 @@ class MockClaudeEnabled implements SessionProvider {
       items: this.items.slice(-Math.max(1, limit)),
     };
   }
-  async sendMessage(sessionId: string, text: string): Promise<SendMessageResult> {
+  async sendMessage(
+    sessionId: string,
+    text: string,
+    opts?: SendMessageOptions,
+  ): Promise<SendMessageResult> {
     const session = this.sessions.find((s) => s.id === sessionId);
     if (!session) throw new Error(`Unknown session: ${sessionId}`);
+    this.lastSend = { sessionId, text, opts };
     const turnId = `turn_${Date.now()}`;
     this.activeTurnId = turnId;
     this.items.push({ role: 'user', text, turnId });
     this.items.push({ role: 'assistant', text: `[mock] Response to: ${text}`, turnId });
     this.activeTurnId = undefined;
-    return { sessionId, turnId, status: 'completed' };
+    return {
+      sessionId,
+      turnId,
+      status: 'completed',
+      resumeMode: opts?.forkSession ? 'fork' : 'resume',
+      attachedToTerminal: false,
+      maxTurns: opts?.maxTurns,
+      model: opts?.model,
+    };
   }
   async interrupt(sessionId: string): Promise<InterruptResult> {
     const session = this.sessions.find((s) => s.id === sessionId);
@@ -271,12 +286,17 @@ class MockClaudeEnabled implements SessionProvider {
     }
     return { sessionId, turnId: this.activeTurnId, status: 'completed', latestMessage: '[mock] completed' };
   }
-  async steer(sessionId: string, _text: string): Promise<SteerResult> {
-    return {
-      sessionId,
-      accepted: false,
-      error: 'Claude does not support mid-turn steering. Use interrupt() then send_message().',
-    };
+  async steer(sessionId: string, text: string): Promise<SteerResult> {
+    if (!this.activeTurnId) {
+      return {
+        sessionId,
+        accepted: false,
+        error:
+          'No active Wingman turn to steer. Use send_message to start a turn, or interrupt and then send_message.',
+      };
+    }
+    this.items.push({ role: 'user', text: `[steer] ${text}`, turnId: this.activeTurnId });
+    return { sessionId, turnId: this.activeTurnId, accepted: true };
   }
   async listApprovals(sessionId: string): Promise<ListApprovalsResult> {
     return { sessionId, approvals: [] };
@@ -286,7 +306,7 @@ class MockClaudeEnabled implements SessionProvider {
       sessionId,
       approvalId,
       resolved: false,
-      error: 'Claude does not support programmatic approval resolution.',
+      error: `Approval not found: ${approvalId}`,
     };
   }
   async setSessionMeta(sessionId: string, meta: SetSessionMetaOptions): Promise<SetSessionMetaResult> {
@@ -949,7 +969,7 @@ describe('tool handlers for Claude wait/steer/approvals parity', () => {
     expect(body.latestMessage).toBeDefined();
   });
 
-  it('steer returns unsupported error for Claude', async () => {
+  it('steer returns an error when the Claude session has no active turn', async () => {
     const res = await handlers.steer({
       provider: 'claude',
       session_id: 'claude_test_1',
@@ -959,7 +979,38 @@ describe('tool handlers for Claude wait/steer/approvals parity', () => {
     
     const body = JSON.parse(res.content[0]!.text);
     expect(body.accepted).toBe(false);
-    expect(body.error).toMatch(/claude does not support/i);
+    expect(body.error).toMatch(/no active wingman turn/i);
+    expect(body.error).toMatch(/send_message/i);
+  });
+
+  it('send_message forwards Claude turn controls', async () => {
+    const res = await handlers.send_message({
+      provider: 'claude',
+      session_id: 'claude_test_1',
+      text: 'keep going',
+      max_turns: 20,
+      permission_mode: 'acceptEdits',
+      allowed_tools: ['Read'],
+      disallowed_tools: ['Bash'],
+      model: 'from-call',
+      fork_session: false,
+      approval_timeout_ms: 1500,
+    });
+    expect(res.isError).toBeUndefined();
+    expect(claude.lastSend?.opts).toMatchObject({
+      maxTurns: 20,
+      permissionMode: 'acceptEdits',
+      allowedTools: ['Read'],
+      disallowedTools: ['Bash'],
+      model: 'from-call',
+      forkSession: false,
+      approvalTimeoutMs: 1500,
+    });
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.attachedToTerminal).toBe(false);
+    expect(body.resumeMode).toBe('resume');
+    expect(body.maxTurns).toBe(20);
+    expect(body.model).toBe('from-call');
   });
 
   it('list_approvals returns empty array for Claude', async () => {
@@ -974,7 +1025,7 @@ describe('tool handlers for Claude wait/steer/approvals parity', () => {
     expect(body.approvals).toEqual([]);
   });
 
-  it('resolve_approval returns unsupported error for Claude', async () => {
+  it('resolve_approval returns not found when Claude has no matching prompt', async () => {
     const res = await handlers.resolve_approval({
       provider: 'claude',
       session_id: 'claude_test_1',
@@ -985,7 +1036,7 @@ describe('tool handlers for Claude wait/steer/approvals parity', () => {
     
     const body = JSON.parse(res.content[0]!.text);
     expect(body.resolved).toBe(false);
-    expect(body.error).toMatch(/claude does not support/i);
+    expect(body.error).toMatch(/approval not found/i);
   });
 });
 

@@ -20,10 +20,14 @@ import {
   SteerSchema,
   ListApprovalsSchema,
   ResolveApprovalSchema,
-  ApprovalDecisionSchema,
   SetSessionMetaSchema,
   ExportTranscriptSchema,
   ExportFormatSchema,
+  GetStatusSchema,
+  StartCodexExecSchema,
+  RunHeadlessSchema,
+  GetRunSchema,
+  StopSchema,
 } from './tools.js';
 import { bearerAuth } from './auth.js';
 import { createProviders } from '../providers/index.js';
@@ -36,6 +40,7 @@ import {
   isHealthzAuthFree,
   type BridgeConfig,
 } from '../config.js';
+import { buildBridgeStatus, writeHeartbeat } from '../reachability.js';
 
 export interface StartServerOptions {
   host?: string;
@@ -63,7 +68,25 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
   }
 
   const providers = createProviders();
-  const handlers = createToolHandlers(providers);
+  const startedAtMs = Date.now();
+  const bridgeStatus = () =>
+    buildBridgeStatus({
+      pid: process.pid,
+      startedAtMs,
+      port,
+      now: Date.now(),
+    });
+  const handlers = createToolHandlers(providers, { bridgeStatus });
+  const beat = () => {
+    try {
+      writeHeartbeat({ pid: process.pid, port, startedAt: new Date(startedAtMs).toISOString() });
+    } catch (err) {
+      console.error('[wingman] heartbeat write failed:', err instanceof Error ? err.message : err);
+    }
+  };
+  beat();
+  const heartbeatTimer = setInterval(beat, 15_000);
+  if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
 
   // createMcpExpressApp's `host` only controls DNS-rebinding Host checks.
   // Keep listen() on loopback (`host` below), but pass 0.0.0.0 here so
@@ -73,14 +96,15 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
   // Health endpoint - auth requirement is configurable via WINGMAN_HEALTHZ_AUTH_FREE
   // Default: requires auth. Set WINGMAN_HEALTHZ_AUTH_FREE=1 for monitors/tunnels that need auth-free access.
   const healthzAuthFree = isHealthzAuthFree();
+  const sendStatus = (_req: unknown, res: { status: (code: number) => { json: (body: unknown) => void } }) => {
+    res.status(200).json(bridgeStatus());
+  };
   if (healthzAuthFree) {
-    app.get('/healthz', (_req, res) => {
-      res.status(200).json({ ok: true, service: 'wingman' });
-    });
+    app.get('/healthz', sendStatus);
+    app.get('/status', sendStatus);
   } else {
-    app.get('/healthz', bearerAuth(token), (_req, res) => {
-      res.status(200).json({ ok: true, service: 'wingman' });
-    });
+    app.get('/healthz', bearerAuth(token), sendStatus);
+    app.get('/status', bearerAuth(token), sendStatus);
   }
 
   app.use('/mcp', bearerAuth(token));
@@ -119,12 +143,12 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
     server.registerTool(
       'send_message',
       {
-        description: 'Send a user message into an existing session (starts a turn for Codex).',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-          text: z.string(),
-        },
+        description:
+          'Send a user message into an existing session. Codex starts a turn. ' +
+          'Claude resumes that session id in a headless query (fork_session true copies it instead) ' +
+          'with a configurable turn budget, permission mode, tool allow and deny lists, and model. ' +
+          'Omit model to inherit the Claude session model. A headless Claude turn is not shown in an already-open interactive terminal.',
+        inputSchema: SendMessageSchema.shape,
       },
       async (args) => handlers.send_message(SendMessageSchema.parse(args)),
     );
@@ -145,15 +169,10 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'create_session',
       {
         description:
-          'Create a new session (Codex: thread/start). Optional cwd, initial prompt, name, tags, and model override (Codex only).',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          cwd: z.string().optional(),
-          prompt: z.string().optional(),
-          name: z.string().optional(),
-          tags: z.array(z.string()).optional(),
-          model: z.string().optional().describe('Model override for Codex sessions. Optional; defaults to Codex config/defaults. Ignored for other providers.'),
-        },
+          'Create a new session. Codex: thread/start, optional model override (otherwise Codex config). ' +
+          'Claude: new headless session. Optional model, max_turns (default 50), permission_mode, ' +
+          'allowed_tools, and disallowed_tools. Omit model to let Claude Code pick; later send_message calls inherit the session model.',
+        inputSchema: CreateSessionSchema.shape,
       },
       async (args) => handlers.create_session(CreateSessionSchema.parse(args)),
     );
@@ -175,14 +194,10 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'wait_turn',
       {
         description:
-          'Wait for an active Codex turn to complete, fail, be interrupted, or timeout. ' +
-          'Returns status and latest message snippet. Use instead of polling read_transcript.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-          timeout_ms: z.number().int().positive().max(300_000).optional(),
-          poll_interval_ms: z.number().int().positive().max(10_000).optional(),
-        },
+          'Wait for an active Codex or Claude turn to complete, fail, be interrupted, or time out. ' +
+          'Returns early with status inProgress while a permission prompt is waiting. ' +
+          'Use instead of polling read_transcript.',
+        inputSchema: WaitTurnSchema.shape,
       },
       async (args) => handlers.wait_turn(WaitTurnSchema.parse(args)),
     );
@@ -191,13 +206,11 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'steer',
       {
         description:
-          'Add guidance to an in-flight Codex turn without starting a new turn. ' +
-          'Use this to provide mid-turn input like follow-up instructions or clarifications.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-          text: z.string(),
-        },
+          'Add guidance to an in-flight turn without starting a new one. ' +
+          'Codex uses turn/steer. Claude queues a user message on the active headless query ' +
+          '(priority now). It does not steer an interactive terminal. ' +
+          'If no Wingman turn is active, interrupt or send_message instead.',
+        inputSchema: SteerSchema.shape,
       },
       async (args) => handlers.steer(SteerSchema.parse(args)),
     );
@@ -206,12 +219,11 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'list_approvals',
       {
         description:
-          'List pending approval requests for a Codex session. ' +
-          'Approvals are required for sandbox commands, file changes, or network access.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-        },
+          'List pending approval requests for a Codex or Claude session. ' +
+          'Claude prompts come from the Agent SDK canUseTool callback ' +
+          '(commands, file changes, network, and other tools). ' +
+          'An unanswered Claude prompt is denied when the approval timeout elapses.',
+        inputSchema: ListApprovalsSchema.shape,
       },
       async (args) => handlers.list_approvals(ListApprovalsSchema.parse(args)),
     );
@@ -220,13 +232,10 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'resolve_approval',
       {
         description:
-          'Resolve a pending Codex approval request. Decisions: accept, acceptForSession, decline, cancel.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-          approval_id: z.string(),
-          decision: ApprovalDecisionSchema,
-        },
+          'Resolve a pending Codex or Claude approval. ' +
+          'Decisions: accept, acceptForSession (allow the same tool again for this session), decline, cancel. ' +
+          'cancel denies the tool and interrupts the Claude turn.',
+        inputSchema: ResolveApprovalSchema.shape,
       },
       async (args) => handlers.resolve_approval(ResolveApprovalSchema.parse(args)),
     );
@@ -244,6 +253,75 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
         },
       },
       async (args) => handlers.set_session_meta(SetSessionMetaSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'get_bridge_status',
+      {
+        description:
+          'Report that this Wingman process is up (pid, uptime, and how to read a later failure). ' +
+          'If the call itself fails: Cloudflare 1033 or HTTP 530 means tunnel_down (cloudflared is not connected). ' +
+          'HTTP 502 or 504 means server_down (the tunnel is up and Wingman is not listening). ' +
+          'fetch failed, ENOTFOUND, or a timeout with no HTTP status means host_offline. ' +
+          'HTTP 401 or 403 means the server is up and the bearer token was rejected. ' +
+          'This tool cannot answer after the process exits. On the machine, run wingman-tunnel diagnose.',
+        inputSchema: {},
+      },
+      async () => handlers.get_bridge_status(),
+    );
+
+    server.registerTool(
+      'get_status',
+      {
+        description:
+          'Per session: idle, working, awaiting_approval, or errored, plus last activity, pending prompt, model, git HEAD, dirty files, and process RSS.',
+        inputSchema: GetStatusSchema.shape,
+      },
+      async (args) => handlers.get_status(GetStatusSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'start_codex_exec',
+      {
+        description:
+          'Start or resume a headless `codex exec` run (CLI 0.166 flags: --cd, --sandbox, --model, --json). ' +
+          'Does not pass --full-auto. The prompt is written to stdin so multi-line text is safe on Windows. ' +
+          'Returns a run id. Poll with get_run.',
+        inputSchema: StartCodexExecSchema.shape,
+      },
+      async (args) => handlers.start_codex_exec(StartCodexExecSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'run_headless',
+      {
+        description:
+          'Start a long Claude run. The prompt is passed as text to the Agent SDK (not through PowerShell). ' +
+          'Accepts max_turns and permission_mode. Returns a run id. Poll with get_run.',
+        inputSchema: RunHeadlessSchema.shape,
+      },
+      async (args) => handlers.run_headless(RunHeadlessSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'get_run',
+      {
+        description: 'Poll a headless Codex exec or Claude run. Returns status, exit code, output tail, and RSS.',
+        inputSchema: GetRunSchema.shape,
+      },
+      async (args) => handlers.get_run(GetRunSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'stop',
+      {
+        description:
+          'Stop a session turn or kill a headless run. Pass session_id (with provider) or run_id. ' +
+          'force SIGKILLs a codex exec process. Shared Codex and Claude processes are interrupted, not killed. ' +
+          'Includes memory use when a pid is known.',
+        inputSchema: StopSchema.shape,
+      },
+      async (args) => handlers.stop(StopSchema.parse(args)),
     );
 
     server.registerTool(
@@ -329,6 +407,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
     token,
     url,
     close: async () => {
+      clearInterval(heartbeatTimer);
       const httpServer = (app as unknown as { __httpServer?: { close: (cb: (err?: Error) => void) => void } })
         .__httpServer;
       if (httpServer) {

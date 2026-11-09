@@ -112,7 +112,10 @@ Once connected, Cursor can use these Wingman MCP tools:
 | `send_message` | Send a message to a session |
 | `interrupt` | Stop an in-progress turn |
 | `create_session` | Start a new Codex/Claude session |
-| `wait_turn` | Wait for a turn to complete |
+| `wait_turn` | Wait for a Codex or Claude turn to complete |
+| `steer` | Add guidance to an in-flight turn |
+| `list_approvals` | List pending tool approvals |
+| `resolve_approval` | Approve or deny a pending tool call |
 
 See the main [README](../../README.md) for full tool documentation.
 
@@ -144,6 +147,7 @@ See the main [README](../../README.md) for full tool documentation.
 - Cloudflare Tunnel: Download `cloudflared.exe` from [Cloudflare releases](https://github.com/cloudflare/cloudflared/releases)
 - Tailscale: Install from [tailscale.com/download](https://tailscale.com/download)
 - Path separators: Wingman handles both `/` and `\` in `cwd` arguments
+- `CLAUDE_DISCOVER_DIRS` uses `;` between directories on Windows, so a value like `C:\src\a;D:\src\b` is two paths
 
 ## Troubleshooting
 

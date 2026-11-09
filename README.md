@@ -152,21 +152,29 @@ flowchart LR
 | `list_sessions` | `provider?`: `codex` \| `claude` | Lists sessions for one or both providers (includes `status`, `source`, `tags`, `hostId`, `hostName`) |
 | `get_session` | `provider`, `session_id` | Get detailed session info including status (`idle` / `running`), tags, and host identity |
 | `read_transcript` | `provider`, `session_id`, `limit?` | Recent messages (newest at end) |
-| `send_message` | `provider`, `session_id`, `text` | Codex: `turn/start`; Claude: returns `accepted` quickly, turn runs async |
-| `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`; Claude: works when Wingman owns the active turn |
-| `create_session` | `provider`, `cwd?`, `prompt?`, `name?`, `tags?`, `model?` | Codex: `thread/start` with optional model override; Claude: new session with optional name/tags (async). Model defaults to Codex config/defaults when not specified. |
-| `wait_turn` | `provider`, `session_id`, `timeout_ms?`, `poll_interval_ms?` | Wait for turn to complete/fail/timeout; returns status + message snippet |
-| `steer` | `provider`, `session_id`, `text` | Add guidance to in-flight turn (Codex only; Claude returns unsupported) |
-| `list_approvals` | `provider`, `session_id` | List pending approvals (Codex); Claude returns empty array |
-| `resolve_approval` | `provider`, `session_id`, `approval_id`, `decision` | Resolve approval (Codex); Claude returns unsupported error |
+| `send_message` | `provider`, `session_id`, `text`, `model?`, `max_turns?`, `permission_mode?`, `allowed_tools?`, `disallowed_tools?`, `fork_session?`, `approval_timeout_ms?` | Codex: `turn/start`. Claude: headless resume of the same session id (or a fork), returns `accepted` quickly. Omit `model` to inherit the session model. |
+| `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`. Claude: aborts the Wingman-owned headless query (`AbortController` and `Query.interrupt()`). |
+| `create_session` | `provider`, `cwd?`, `prompt?`, `name?`, `tags?`, `model?`, `max_turns?`, `permission_mode?`, `allowed_tools?`, `disallowed_tools?`, `approval_timeout_ms?` | Codex: `thread/start` with optional model override. Claude: new headless session. Model is optional for both. |
+| `wait_turn` | `provider`, `session_id`, `timeout_ms?`, `poll_interval_ms?` | Wait for a Codex or Claude turn to complete, fail, or time out. Returns early while a permission prompt is waiting. |
+| `steer` | `provider`, `session_id`, `text` | Add guidance to an in-flight turn. Codex: `turn/steer`. Claude: queues a user message on the active headless query. |
+| `list_approvals` | `provider`, `session_id` | List pending Codex or Claude approval requests. |
+| `resolve_approval` | `provider`, `session_id`, `approval_id`, `decision` | Accept, accept for the session, decline, or cancel a Codex or Claude approval. |
 | `set_session_meta` | `provider`, `session_id`, `name?`, `tags?` | Set session name/tags for easier discovery (Wingman-owned sessions) |
 | `export_transcript` | `provider`, `session_id`, `format`, `limit?` | Export transcript as `markdown` \| `json`; returns content + writes to `~/.wingman/exports/` |
+| `get_bridge_status` | (none) | This process is up: pid, uptime, and how to read a later failure. See [Operations](docs/operations.md). |
+| `get_status` | `provider`, `session_id`, `caller?` | `idle`, `working`, `awaiting_approval`, or `errored`, plus last activity, pending prompt, model, git HEAD, dirty files, and RSS |
+| `start_codex_exec` | `prompt`, `cwd`, `sandbox?`, `model?`, `resume_session_id?` | Headless `codex exec` (CLI 0.166). No `--full-auto`. Prompt goes to stdin. Returns a run id. |
+| `run_headless` | `prompt`, `cwd?`, `session_id?`, `max_turns?`, `permission_mode?`, `model?` | Long Claude run. Prompt is an SDK string, not a PowerShell command. Returns a run id. |
+| `get_run` | `run_id`, `tail_lines?` | Poll a headless run: status, exit code, output tail, RSS |
+| `stop` | `session_id?`, `run_id?`, `provider?`, `force?` | Interrupt a session or kill a headless run. Reports memory use. |
 
 ### create_session behavior
 
 For **Claude sessions**, `create_session` returns immediately:
-- **Without prompt**: Returns `{ sessionId, status: "created" }` — session is registered but no turn is running
-- **With prompt**: Returns `{ sessionId, status: "accepted", turnId }` — the initial prompt turn runs in the background, preventing MCP HTTP timeouts
+- **Without prompt**: Returns `{ sessionId, status: "created", resumeMode: "new", maxTurns, permissionMode }`. The session is registered and no turn is running.
+- **With prompt**: Returns `{ sessionId, status: "accepted", turnId, ... }` and the initial prompt runs in the background, so the MCP HTTP call does not wait for the model.
+
+Optional Claude fields: `model`, `max_turns` (default 50), `permission_mode` (default `default`), `allowed_tools`, `disallowed_tools`, `approval_timeout_ms` (default 120000). Omit `model` and Claude Code chooses its own default. Do not pass an old model id unless you mean that exact id.
 
 For **Codex sessions**, `create_session` calls `thread/start` and returns `{ sessionId, status: "created" | "accepted", model? }`.
 
@@ -191,15 +199,38 @@ npm run pair
 
 ### send_message behavior
 
-For **Claude sessions**, `send_message` returns immediately with `{ status: "accepted", turnId }` while the SDK query runs in the background. Use `get_session` or `read_transcript` to observe progress. This prevents MCP HTTP timeouts during long model turns.
+For **Claude sessions**, `send_message` returns immediately with `{ status: "accepted", turnId, resumeMode, maxTurns, permissionMode, model?, modelSource, attachedToTerminal: false, note }` while the SDK query runs in the background. Use `wait_turn`, `get_session`, or `read_transcript` to observe progress. This keeps the MCP HTTP call from waiting on the model.
 
-For **Codex sessions**, `send_message` blocks until `turn/start` returns (typically fast), then returns `{ status: "completed" | "inProgress" }`.
+Per-call fields override the `WINGMAN_CLAUDE_*` defaults below. `max_turns` defaults to 50 (not 1). `permission_mode` defaults to `default`, and Wingman sets `permissionPrompts: "host"` so tool prompts reach `list_approvals` instead of being auto-denied.
+
+Model priority for a Claude turn:
+
+1. `send_message.model` or `create_session.model`
+2. `WINGMAN_CLAUDE_MODEL`
+3. The model already stored for that session (resume)
+4. Omit the flag and let Claude Code use its own default
+
+Wingman never substitutes a built-in model id. Passing the session model on resume is what stops a headless query from falling through to the CLI default.
+
+For **Codex sessions**, `send_message` blocks until `turn/start` returns (typically fast), then returns `{ status: "completed" | "inProgress" }`. Claude-only fields are ignored.
+
+### Resume, fork, and open terminals
+
+`send_message` on Claude resumes that session id with `forkSession: false` unless you pass `fork_session: true`.
+
+| `resumeMode` | Meaning |
+|--------------|---------|
+| `resume` | Same session id. The headless query continues the session file. |
+| `fork` | A new session id is copied from the original. The original is left unchanged. `actualSessionId` is the copy (immediately in mock mode, and on `wait_turn` / `get_session` once the CLI reports it in real mode). |
+| `new` | `create_session` started a new id. |
+
+`attachedToTerminal` is always `false` for these calls. A headless Agent SDK query does not attach to an already-open interactive Claude Code terminal, so the turn will not appear there. That limit is in the CLI: Wingman can read and resume the session file, and it cannot type into a TUI that already holds the session. If that terminal has the transcript open, the CLI may still fork a new id even when `fork_session` is false. Check `actualSessionId` on `get_session` and `wait_turn`. To watch relayed turns, read them with `read_transcript`, or reopen the session id in Claude Code after the turn finishes.
 
 ### interrupt behavior
 
-For **Claude sessions**, `interrupt` works reliably when Wingman owns the active turn (i.e., you called `send_message` through Wingman for the current turn). Returns `{ status: "interrupted", turnId }` on success, or `{ status: "no_active_turn" }` if the session is idle.
+For **Claude sessions**, `interrupt` works when Wingman owns the active turn (you called `send_message` or `create_session` through Wingman for the current turn). It aborts the query, calls `Query.interrupt()` on the streaming headless process, and denies any permission prompt that is still open. Returns `{ status: "interrupted", turnId }` on success, or `{ status: "no_active_turn" }` if the session is idle.
 
-**Limitation**: Interrupting discovered sessions or sessions where the turn was started outside Wingman (e.g., via Claude CLI directly) may not work — Wingman has no active query handle to abort. In these cases, use the Claude CLI directly: `Ctrl+C` in the terminal or `claude interrupt`.
+**Limitation**: Interrupting a turn that was started outside Wingman (for example in the Claude CLI directly) does not work. Wingman has no query handle to abort. Use `Ctrl+C` in that terminal.
 
 For **Codex sessions**, `interrupt` requires a known active `turnId` tracked from `turn/started` notifications.
 
@@ -221,11 +252,11 @@ Sessions returned by `list_sessions` and `get_session` include `name` and `tags`
 
 **Note**: In real mode, `set_session_meta` only works for Wingman-owned sessions (sessions created via Wingman's `create_session`). Codex real mode does not support custom metadata.
 
-### wait_turn (both providers)
+### wait_turn (Codex and Claude)
 
-**wait_turn** provides long-poll waiting instead of busy-polling `read_transcript`. Works for both Codex and Claude sessions.
+**wait_turn** provides long-poll waiting instead of busy-polling `read_transcript`. It works for both Codex and Claude sessions.
 
-For **Claude sessions**, `wait_turn` polls `activeTurns` until the turn completes, times out, or the session becomes idle. This is essential for real Claude cold starts which can take 1-3+ minutes — use `wait_turn` to avoid MCP HTTP timeouts.
+For **Claude sessions**, `wait_turn` polls until the turn completes, times out, or the session is idle. Real Claude cold starts can take 1-3+ minutes. Use `wait_turn` so the MCP client does not hit its HTTP timeout. If a tool prompt is waiting, `wait_turn` returns immediately with `status: "inProgress"` and a message that approvals are pending. Resolve them, then call `wait_turn` again.
 
 Example Claude workflow:
 ```
@@ -240,25 +271,36 @@ Example response:
 { "sessionId": "thr_123", "turnId": "turn_456", "status": "completed", "latestMessage": "Done!" }
 ```
 
-### steer/approvals (Codex-specific, Claude soft stubs)
+### steer
 
-**steer**: Add mid-turn guidance without starting a new turn. Uses Codex's `turn/steer` API.
-- **Codex**: Useful for follow-up instructions while Codex is working.
-- **Claude**: Returns `{ accepted: false, error: "Claude does not support mid-turn steering..." }`. Use `interrupt()` + `send_message()` instead.
+**steer** adds guidance to an in-flight turn without starting a new one.
 
-**list_approvals** + **resolve_approval**: Programmatic approval handling for sandbox commands, file changes, or network access.
-- **Codex**: Full support via JSON-RPC requests.
-- **Claude**: `list_approvals` returns empty array; `resolve_approval` returns unsupported error. Approvals must be handled in the local Claude CLI directly.
+- **Codex**: Uses `turn/steer`.
+- **Claude**: Queues a user message on the active headless query (`priority: "now"`) so the CLI can fold it into the running turn. This only reaches a query Wingman started. It does not steer an interactive terminal. If no Wingman turn is active, the tool returns an error telling you to `send_message`, or to `interrupt` and then `send_message`.
 
-Example Codex approval flow:
+### list_approvals and resolve_approval
+
+Both tools work for Codex and Claude.
+
+- **Codex**: JSON-RPC approval requests for sandbox commands, file changes, or network access.
+- **Claude**: The Agent SDK `canUseTool` callback parks each prompt until the supervisor resolves it. `list_approvals` returns the tool name, kind (`command`, `fileChange`, or `network`), and a short summary. Decisions:
+  - `accept`: allow this call once
+  - `acceptForSession`: allow this call and the same tool action for the rest of the Wingman session
+  - `decline`: deny the tool
+  - `cancel`: deny the tool and interrupt the turn
+
+If nobody resolves a Claude prompt before `approval_timeout_ms` (default 120000, or `WINGMAN_CLAUDE_APPROVAL_TIMEOUT_MS`), Wingman denies it. `permission_mode: "dontAsk"` still denies without a prompt, because that mode has no approval surface. `bypassPermissions` skips prompts and requires the SDK's explicit bypass flag, which Wingman sets only when you choose that mode.
+
+Example approval flow:
 ```
-1. send_message("sudo apt update")  →  { status: "inProgress" }
-2. list_approvals()                 →  { approvals: [{ id: "appr_1", kind: "command", command: "sudo apt update" }] }
-3. resolve_approval("appr_1", "accept")  →  { resolved: true }
-4. wait_turn()                      →  { status: "completed" }
+1. send_message("update the lockfile")   →  { status: "accepted" }
+2. wait_turn()                            →  { status: "inProgress", latestMessage: "Waiting for 1 approval(s)" }
+3. list_approvals()                       →  { approvals: [{ id: "appr_1", kind: "command", toolName: "Bash", command: "git status" }] }
+4. resolve_approval("appr_1", "accept")   →  { resolved: true }
+5. wait_turn()                            →  { status: "completed" }
 ```
 
-**Note**: In mock mode (`CODEX_MOCK=1`), commands containing `sudo` or `rm -rf` trigger simulated approval requests for testing.
+**Note**: In Codex mock mode (`CODEX_MOCK=1`), commands containing `sudo` or `rm -rf` trigger simulated approval requests. In Claude mock mode (`CLAUDE_MOCK=1`), a message shaped as `[approval-request ToolName] args` parks the turn on a prompt so you can test `list_approvals` without a real CLI.
 
 ## Environment variables
 
@@ -289,8 +331,14 @@ Example Codex approval flow:
 |----------|---------|-------------|
 | `CLAUDE_MOCK` | unset | Set to `1` for in-memory mock mode |
 | `CLAUDE_DISCOVER` | `1` | Set to `0` to disable session discovery |
-| `CLAUDE_DISCOVER_DIRS` | (all) | Colon-separated directories to search for sessions |
+| `CLAUDE_DISCOVER_DIRS` | (all) | Directories to search, separated by the OS path delimiter (`:` on macOS and Linux, `;` on Windows) so drive letters stay intact |
 | `CLAUDE_SEND_TIMEOUT_MS` | `120000` | Timeout for Claude SDK send operations |
+| `WINGMAN_CLAUDE_MAX_TURNS` | `50` | Agent turns allowed in one Claude query (cap 500). Per-call `max_turns` wins. |
+| `WINGMAN_CLAUDE_PERMISSION_MODE` | `default` | `default`, `acceptEdits`, `bypassPermissions`, `plan`, `dontAsk`, or `auto` |
+| `WINGMAN_CLAUDE_ALLOWED_TOOLS` | unset | Comma-separated Claude tools that skip the permission prompt |
+| `WINGMAN_CLAUDE_DISALLOWED_TOOLS` | unset | Comma-separated Claude tools removed from the session |
+| `WINGMAN_CLAUDE_MODEL` | unset | Optional model override. Unset inherits the session model, then Claude Code's own default. Never set this to pin an old model by accident. |
+| `WINGMAN_CLAUDE_APPROVAL_TIMEOUT_MS` | `120000` | Deny a Claude permission prompt that is not resolved in time |
 
 The Claude provider uses the bundled Agent SDK binary automatically. No separate `claude` CLI install is required unless you override `pathToClaudeCodeExecutable` in code.
 
@@ -300,6 +348,8 @@ The Claude provider uses the bundled Agent SDK binary automatically. No separate
 |----------|---------|-------------|
 | `WINGMAN_HOST_ID` | hostname | Machine identifier for multi-host setups |
 | `WINGMAN_HOST_NAME` | hostname | Human-friendly host name for display |
+| `WINGMAN_CALLER` | `default` | Caller id used when a tool omits `caller` |
+| `WINGMAN_ALLOWED_PATHS` | unset | Project roots this process may touch, split on the OS path delimiter (`:` or `;`) |
 
 See [docs/hosts/multi-host.md](docs/hosts/multi-host.md) for running Wingman on multiple machines.
 
@@ -320,10 +370,10 @@ Wingman can also **discover existing Claude Code sessions** via the Agent SDK's 
 **How discovery works:**
 1. `list_sessions` merges Wingman's registry with sessions discovered via SDK
 2. If the same session ID exists in both, the Wingman registry entry takes precedence
-3. `read_transcript`, `send_message`, and `interrupt` work for discovered sessions by resuming via `query({ options: { resume: sessionId } })`
+3. `read_transcript`, `send_message`, and `interrupt` work for discovered sessions by resuming via `query({ options: { resume: sessionId, forkSession: false } })`
 4. When you interact with a discovered session, it's auto-registered in Wingman's registry
 
-**What discovery is NOT:** This is not TTY hijacking. Wingman does not attach to terminal processes, scrape windows, or take over interactive sessions. Discovery reads session files on disk via official SDK APIs.
+**What discovery is NOT:** This is not TTY hijacking. Wingman does not attach to terminal processes, scrape windows, or take over interactive sessions. Discovery reads session files on disk via official SDK APIs. A headless resume is not visible in an already-open interactive terminal. See [Resume, fork, and open terminals](#resume-fork-and-open-terminals).
 
 Set `CLAUDE_DISCOVER=0` to disable discovery and only show Wingman-created sessions.
 
@@ -351,7 +401,8 @@ From a checkout, run these through `npm run` (the bare commands below are what a
 |---------|---------|
 | `wingman-pair` / `wingman-mcp` | Generate token, save config, start MCP, print pair instructions |
 | `wingman-doctor` | Check environment: Node version, config, port, Claude SDK / Codex binary |
-| `wingman-tunnel` | Detect tunnel tools, print ranked setup commands, persist tunnel state |
+| `wingman-tunnel` | Detect tunnel tools, print ranked setup commands, persist tunnel state. `diagnose` and `classify` tell tunnel failures apart. |
+| `wingman-task` | Install a Windows scheduled task that restarts on crash and reuses the bearer token |
 
 For local development:
 
@@ -360,6 +411,7 @@ For local development:
 | `npm run pair` | Same as `wingman-pair` (uses tsx) |
 | `npm run doctor` | Same as `wingman-doctor` |
 | `npm run tunnel` | Same as `wingman-tunnel` |
+| `npm run task` | Same as `wingman-task` |
 | `npm run dev` | Start MCP only (needs existing config/token) |
 | `npm run build` | Compile TypeScript → `dist/` |
 | `npm test` | Vitest unit tests (mocked providers) |
@@ -397,10 +449,20 @@ WINGMAN_HEALTHZ_AUTH_FREE=1 npm run pair
 
 **Security tradeoff**: An auth-free `/healthz` reveals that Wingman is running but exposes no secrets, session data, or MCP functionality. The `/mcp` endpoint always requires bearer auth.
 
-Example response:
+Example response while the process is alive:
 ```json
-{ "ok": true, "service": "wingman" }
+{ "ok": true, "service": "wingman", "state": "server_up", "pid": 123, "uptimeMs": 1000 }
 ```
+
+`/status` returns the same body. If the call fails, the client has to classify the error itself. `get_bridge_status` repeats the rules, and `wingman-tunnel diagnose` can see them from the machine. Full table: [docs/operations.md](docs/operations.md).
+
+| What the client sees | State |
+|---|---|
+| HTTP 200 from `/healthz` | `server_up` |
+| HTTP 401 or 403 | `auth_rejected` (Wingman is up) |
+| Cloudflare 1033 or HTTP 530 | `tunnel_down` |
+| HTTP 502 or 504 | `server_down` (tunnel up, Wingman down) |
+| `fetch failed`, DNS error, or timeout with no HTTP status | `host_offline` |
 
 ## Doctor / Health Check
 

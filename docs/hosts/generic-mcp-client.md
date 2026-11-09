@@ -56,7 +56,16 @@ Accept: application/json
 GET https://YOUR-TUNNEL-URL/healthz
 ```
 
-Returns `{"ok":true,"service":"wingman"}` when Wingman is running.
+Returns `{"ok":true,"service":"wingman","state":"server_up"}` when Wingman is running. `/status` returns the same body.
+
+If this request fails, do not treat every error as "fetch failed":
+
+- Cloudflare 1033 or HTTP 530: the tunnel is down.
+- HTTP 502 or 504: the tunnel is up and Wingman is down.
+- DNS failure, timeout, or `fetch failed` with no status: the host is unreachable.
+- HTTP 401 or 403: Wingman is up and the token was rejected.
+
+On the machine, `wingman-tunnel diagnose` separates those cases using the local port and the heartbeat file. See [docs/operations.md](../operations.md).
 
 > **Note**: By default, `/healthz` requires bearer auth. Set `WINGMAN_HEALTHZ_AUTH_FREE=1` to allow unauthenticated health checks (useful for load balancers and monitors).
 
@@ -130,22 +139,24 @@ Response:
 
 | Tool | Required Args | Optional Args | Description |
 |------|---------------|---------------|-------------|
-| `list_sessions` | — | `provider` | List sessions (both providers if omitted) |
-| `get_session` | `provider`, `session_id` | — | Get session details and status |
+| `list_sessions` | none | `provider` | List sessions (both providers if omitted) |
+| `get_session` | `provider`, `session_id` | none | Get session details and status |
 | `read_transcript` | `provider`, `session_id` | `limit` | Read recent messages |
-| `send_message` | `provider`, `session_id`, `text` | — | Send message to session |
-| `interrupt` | `provider`, `session_id` | — | Interrupt active turn |
-| `create_session` | `provider` | `cwd`, `prompt`, `name`, `tags` | Create new session |
-| `wait_turn` | `provider`, `session_id` | `timeout_ms`, `poll_interval_ms` | Wait for turn completion |
-| `steer` | `provider`, `session_id`, `text` | — | Add mid-turn guidance (Codex only) |
-| `list_approvals` | `provider`, `session_id` | — | List pending approvals (Codex only) |
-| `resolve_approval` | `provider`, `session_id`, `approval_id`, `decision` | — | Resolve approval (Codex only) |
+| `send_message` | `provider`, `session_id`, `text` | `model`, `max_turns`, `permission_mode`, `allowed_tools`, `disallowed_tools`, `fork_session`, `approval_timeout_ms` | Send a message. Claude resumes the same session id unless `fork_session` is true. Omit `model` to inherit the Claude session model. |
+| `interrupt` | `provider`, `session_id` | none | Interrupt the active Wingman turn |
+| `create_session` | `provider` | `cwd`, `prompt`, `name`, `tags`, `model`, `max_turns`, `permission_mode`, `allowed_tools`, `disallowed_tools`, `approval_timeout_ms` | Create a session. Claude model is optional. |
+| `wait_turn` | `provider`, `session_id` | `timeout_ms`, `poll_interval_ms` | Wait for a Codex or Claude turn. Returns early while an approval is pending. |
+| `steer` | `provider`, `session_id`, `text` | none | Add guidance to an in-flight Codex or Claude turn |
+| `list_approvals` | `provider`, `session_id` | none | List pending Codex or Claude approvals |
+| `resolve_approval` | `provider`, `session_id`, `approval_id`, `decision` | none | Resolve an approval (`accept`, `acceptForSession`, `decline`, `cancel`) |
 | `set_session_meta` | `provider`, `session_id` | `name`, `tags` | Update session metadata |
+
+Claude `send_message` is a headless Agent SDK query. It does not appear in an already-open interactive Claude Code terminal. `actualSessionId` on the result, `get_session`, and `wait_turn` is the id the CLI wrote. See the main README section "Resume, fork, and open terminals".
 
 ### Provider Values
 
-- `"codex"` — OpenAI Codex via app-server
-- `"claude"` — Anthropic Claude Code via Agent SDK
+- `"codex"`: OpenAI Codex via app-server
+- `"claude"`: Anthropic Claude Code via Agent SDK
 
 ## Timeout Recommendations
 

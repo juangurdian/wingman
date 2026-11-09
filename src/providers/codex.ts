@@ -19,6 +19,7 @@ import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import type {
   Approval,
+  SessionActivity,
   ApprovalDecision,
   ApprovalKind,
   CreateSessionResult,
@@ -95,6 +96,8 @@ export class CodexProvider implements SessionProvider {
   private turnStates = new Map<string, TurnState>(); // threadId -> TurnState
   private pendingApprovals = new Map<string, PendingApproval[]>(); // threadId -> approvals
   private ready: Promise<void> | null = null;
+  private prompts = new Map<string, string>();
+  private models = new Map<string, string>();
 
   constructor() {
     if (useMock()) {
@@ -203,6 +206,32 @@ export class CodexProvider implements SessionProvider {
     };
   }
 
+  activity(sessionId: string): SessionActivity {
+    if (useMock()) {
+      const s = this.mockSessions.get(sessionId);
+      return {
+        running: Boolean(s?.activeTurnId),
+        approvalCount: s?.pendingApprovals.length ?? 0,
+        prompt: this.prompts.get(sessionId),
+        model: this.models.get(sessionId),
+        lastActivityAt: s?.updatedAt ?? s?.turnStartedAt,
+        pid: this.proc?.pid,
+        sharedProcess: true,
+      };
+    }
+    const state = this.turnStates.get(sessionId);
+    return {
+      running: this.activeTurns.has(sessionId),
+      approvalCount: this.pendingApprovals.get(sessionId)?.length ?? 0,
+      error: state?.status === 'failed' ? state.error ?? 'turn failed' : undefined,
+      prompt: this.prompts.get(sessionId),
+      model: this.models.get(sessionId),
+      lastActivityAt: state?.completedAt,
+      pid: this.proc?.pid,
+      sharedProcess: true,
+    };
+  }
+
   async readTranscript(sessionId: string, limit = 50): Promise<Transcript> {
     if (useMock()) {
       const s = this.mockSessions.get(sessionId);
@@ -239,6 +268,7 @@ export class CodexProvider implements SessionProvider {
       s.activeTurnId = turnId;
       s.turnStartedAt = Date.now();
       s.items.push({ role: 'user', text, turnId });
+      this.prompts.set(sessionId, text);
       
       // Simulate approval request if message contains "sudo" or "rm"
       const needsApproval = /\b(sudo|rm\s+-rf?)\b/i.test(text);
@@ -291,6 +321,7 @@ export class CodexProvider implements SessionProvider {
 
     const turnId = result.turn?.id;
     if (turnId) this.activeTurns.set(sessionId, turnId);
+    this.prompts.set(sessionId, text);
     return {
       sessionId,
       turnId,
@@ -331,7 +362,7 @@ export class CodexProvider implements SessionProvider {
   async createSession(opts?: { cwd?: string; prompt?: string; name?: string; tags?: string[]; model?: string }): Promise<CreateSessionResult> {
     // Resolve model: explicit arg > WINGMAN_CODEX_MODEL env > undefined (use Codex default)
     const model = resolveCodexModel(opts?.model);
-    
+
     if (useMock()) {
       const s = this.seedMock({
         cwd: opts?.cwd ?? process.cwd(),
@@ -339,6 +370,7 @@ export class CodexProvider implements SessionProvider {
         preview: opts?.prompt?.slice(0, 80),
         tags: opts?.tags,
       });
+      if (model) this.models.set(s.id, model);
       if (opts?.prompt) {
         await this.sendMessage(s.id, opts.prompt);
       }
@@ -359,6 +391,7 @@ export class CodexProvider implements SessionProvider {
     };
     const sessionId = result.thread?.id;
     if (!sessionId) throw new Error('thread/start did not return thread.id');
+    if (model) this.models.set(sessionId, model);
 
     if (opts?.prompt) {
       await this.sendMessage(sessionId, opts.prompt);

@@ -8,6 +8,13 @@
  *
  * This does NOT attach to arbitrary open terminal processes.
  * Discovery = SDK listSessions / getSessionMessages + resume via query().
+ * A resumed query keeps the same session id unless fork_session is set, but it
+ * still runs headless: an interactive terminal that already has the session
+ * open will not show the turn, and the CLI may fork a new id in that case.
+ *
+ * Turn budget, permission mode, tool allow and deny lists, and model come from
+ * the per-call arguments and WINGMAN_CLAUDE_* defaults. The model is never
+ * hardcoded. Omit it to inherit the session model.
  *
  * Mock mode (CLAUDE_MOCK=1):
  * - Returns simulated discovered sessions for testing merge/dedupe without a real Claude install.
@@ -19,10 +26,12 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type {
   ApprovalDecision,
+  CreateSessionOptions,
   CreateSessionResult,
   InterruptResult,
   ListApprovalsResult,
   ResolveApprovalResult,
+  SendMessageOptions,
   SendMessageResult,
   SessionDetail,
   SessionProvider,
@@ -36,11 +45,21 @@ import type {
   SetSessionMetaResult,
 } from './types.js';
 import {
-  resolveClaudeSendTimeoutMs,
   resolveWaitTurnTimeoutMs,
   resolveHostId,
   resolveHostName,
+  splitPathList,
 } from '../config.js';
+import { ClaudePermissionBroker } from './claude-permissions.js';
+import {
+  buildClaudeQueryOptions,
+  ClaudePromptStream,
+  extractModelFromSessionMessages,
+  readInitModel,
+  readMessageSessionId,
+  readResultText,
+  type ClaudeQueryPlan,
+} from './claude-turn.js';
 
 interface WingmanClaudeSession {
   sessionId: string;
@@ -48,6 +67,10 @@ interface WingmanClaudeSession {
   name?: string;
   preview?: string;
   tags?: string[];
+  /** Last model Wingman passed or observed for this session. */
+  model?: string;
+  /** Set when this id was created by a fork of another session. */
+  forkedFrom?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -65,18 +88,52 @@ interface MockDiscoveredSession {
   gitBranch?: string;
   tag?: string;
   tags?: string[];
+  model?: string;
   createdAt: number;
   updatedAt: number;
   items: TranscriptItem[];
   activeTurnId?: string;
 }
 
+interface ClaudeQueryLike {
+  interrupt(): Promise<unknown>;
+  close(): void;
+}
+
 interface ActiveTurn {
   turnId: string;
   sessionId: string;
+  /** Session id the turn is writing. Differs from the request when the turn forks. */
+  actualSessionId?: string;
   startedAt: number;
+  /** Prompt text for this turn. Kept off the shell command line. */
+  prompt?: string;
   abortController?: AbortController;
+  stream?: ClaudePromptStream;
+  query?: ClaudeQueryLike;
+  plan?: ClaudeQueryPlan;
 }
+
+interface TurnOutcome {
+  turnId: string;
+  status: 'completed' | 'failed' | 'interrupted';
+  error?: string;
+  latestMessage?: string;
+  actualSessionId: string;
+  requestedSessionId: string;
+  resumeMode: ClaudeQueryPlan['resumeMode'];
+  forked: boolean;
+  model?: string;
+  modelSource: ClaudeQueryPlan['modelSource'];
+  attachedToTerminal: false;
+  note: string;
+}
+
+/** Mock-only marker. A message of this shape pauses the turn on a permission prompt. */
+const MOCK_APPROVAL_RE = /^\[approval-request ([A-Za-z0-9_.-]+)\]\s*([\s\S]*)$/;
+
+const NO_ACTIVE_STEER =
+  'No active Wingman turn to steer. Use send_message to start a turn, or interrupt and then send_message.';
 
 function useMock(): boolean {
   return process.env.CLAUDE_MOCK === '1' || process.env.CLAUDE_MOCK === 'true';
@@ -89,9 +146,8 @@ function discoveryEnabled(): boolean {
 }
 
 function discoverDirs(): string[] | undefined {
-  const env = process.env.CLAUDE_DISCOVER_DIRS?.trim();
-  if (!env) return undefined;
-  return env.split(':').map((d) => d.trim()).filter(Boolean);
+  // path.delimiter, not ":", so Windows drive letters in CLAUDE_DISCOVER_DIRS survive.
+  return splitPathList(process.env.CLAUDE_DISCOVER_DIRS);
 }
 
 function registryPath(): string {
@@ -143,6 +199,9 @@ export class ClaudeProvider implements SessionProvider {
   private mockSessions = new Map<string, MockDiscoveredSession>();
   private mockDiscovered = new Map<string, MockDiscoveredSession>();
   private activeTurns = new Map<string, ActiveTurn>();
+  private permissions = new ClaudePermissionBroker();
+  private outcomes = new Map<string, TurnOutcome>();
+  private prompts = new Map<string, string>();
 
   constructor() {
     if (useMock()) {
@@ -325,6 +384,8 @@ export class ClaudeProvider implements SessionProvider {
     const activeTurn = this.activeTurns.get(sessionId);
     const hostId = resolveHostId();
     const hostName = resolveHostName();
+    const outcome = this.outcomes.get(sessionId);
+    const knownModel = this.knownModel(sessionId);
     
     return {
       ...session,
@@ -333,7 +394,43 @@ export class ClaudeProvider implements SessionProvider {
       activeTurnStartedAt: activeTurn?.startedAt,
       hostId,
       hostName,
+      model: outcome?.model ?? knownModel,
+      modelSource: outcome?.modelSource,
+      resumeMode: activeTurn?.plan?.resumeMode ?? outcome?.resumeMode,
+      requestedSessionId: outcome?.requestedSessionId ?? (activeTurn ? sessionId : undefined),
+      actualSessionId: activeTurn?.actualSessionId ?? outcome?.actualSessionId,
+      forked: activeTurn
+        ? Boolean(
+            activeTurn.plan?.forkSession ||
+              (activeTurn.actualSessionId !== undefined && activeTurn.actualSessionId !== sessionId),
+          )
+        : outcome?.forked,
+      attachedToTerminal: activeTurn || outcome ? false : undefined,
+      note: activeTurn?.plan?.note ?? outcome?.note,
     };
+  }
+
+  activity(sessionId: string): import('./types.js').SessionActivity {
+    const active = this.activeTurns.get(sessionId);
+    const approvals = this.permissions.list(sessionId);
+    const outcome = this.outcomes.get(sessionId);
+    return {
+      running: Boolean(active),
+      approvalCount: approvals.length,
+      error: !active && outcome?.status === 'failed' ? outcome.error ?? 'turn failed' : undefined,
+      prompt: active?.prompt ?? this.prompts.get(sessionId),
+      model: active?.plan?.model ?? outcome?.model ?? this.knownModel(sessionId),
+      lastActivityAt: active?.startedAt,
+      pid: process.pid,
+      sharedProcess: true,
+    };
+  }
+
+  private knownModel(sessionId: string): string | undefined {
+    if (useMock()) {
+      return (this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId))?.model;
+    }
+    return loadRegistry().sessions.find((s) => s.sessionId === sessionId)?.model;
   }
 
   private async discoverViaSdk(): Promise<SessionSummary[]> {
@@ -418,78 +515,334 @@ export class ClaudeProvider implements SessionProvider {
     }
   }
 
-  async sendMessage(sessionId: string, text: string): Promise<SendMessageResult> {
+  async sendMessage(
+    sessionId: string,
+    text: string,
+    opts?: SendMessageOptions,
+  ): Promise<SendMessageResult> {
+    const binding = opts?.binding ?? 'resume';
     if (useMock()) {
-      const mock = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
-      if (mock) {
-        const turnId = `turn_mock_${randomUUID().slice(0, 8)}`;
-        mock.activeTurnId = turnId;
-        this.activeTurns.set(sessionId, { turnId, sessionId, startedAt: Date.now() });
-        mock.items.push({ role: 'user', text, turnId });
-
-        setTimeout(() => {
-          mock.items.push({
-            role: 'assistant',
-            text: `[mock Claude] Received: ${text}`,
-            turnId,
-          });
-          mock.preview = text.slice(0, 80);
-          mock.updatedAt = Date.now();
-          mock.activeTurnId = undefined;
-          this.activeTurns.delete(sessionId);
-        }, 50);
-
-        return { sessionId, turnId, status: 'accepted' };
-      }
-      throw new Error(`Unknown mock session: ${sessionId}`);
+      return this.sendMessageMock(sessionId, text, binding, opts);
     }
-
-    const registry = loadRegistry();
-    const session = registry.sessions.find((s) => s.sessionId === sessionId);
-    const turnId = `turn_${randomUUID().slice(0, 8)}`;
-
-    const activeTurn: ActiveTurn = {
-      turnId,
-      sessionId,
-      startedAt: Date.now(),
-      abortController: new AbortController(),
-    };
-    this.activeTurns.set(sessionId, activeTurn);
-
-    this.runTurnInBackground(sessionId, text, session?.cwd, activeTurn).catch((err) => {
-      console.error(`[claude] Background turn error for ${sessionId}:`, err);
-    });
-
-    return { sessionId, turnId, status: 'accepted' };
+    const cwd = loadRegistry().sessions.find((s) => s.sessionId === sessionId)?.cwd;
+    return this.beginRealTurn(sessionId, text, cwd, binding, opts);
   }
 
-  private async runTurnInBackground(
+  private sendMessageMock(
+    sessionId: string,
+    text: string,
+    binding: 'new' | 'resume',
+    opts?: SendMessageOptions,
+  ): SendMessageResult {
+    const requested = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
+    if (!requested) throw new Error(`Unknown mock session: ${sessionId}`);
+
+    const plan = buildClaudeQueryOptions({
+      binding,
+      sessionId,
+      cwd: requested.cwd,
+      turn: { ...opts, binding },
+      sessionModel: binding === 'resume' ? requested.model : undefined,
+    });
+
+    const target =
+      plan.resumeMode === 'fork' ? this.cloneMock(requested) : requested;
+    if (plan.model) target.model = plan.model;
+
+    const turnId = `turn_mock_${randomUUID().slice(0, 8)}`;
+    const abortController = new AbortController();
+    const activeTurn: ActiveTurn = {
+      turnId,
+      sessionId: target.id,
+      actualSessionId: target.id,
+      startedAt: Date.now(),
+      prompt: text,
+      abortController,
+      plan,
+    };
+    this.prompts.set(sessionId, text);
+    this.prompts.set(target.id, text);
+    this.activeTurns.set(sessionId, activeTurn);
+    if (target.id !== sessionId) this.activeTurns.set(target.id, activeTurn);
+    target.activeTurnId = turnId;
+    target.items.push({ role: 'user', text, turnId });
+
+    void this.finishMockTurn(target, sessionId, text, turnId, abortController, plan, opts);
+
+    return this.acceptedResult(sessionId, target.id, turnId, plan);
+  }
+
+  private async finishMockTurn(
+    target: MockDiscoveredSession,
+    requestedSessionId: string,
+    text: string,
+    turnId: string,
+    abortController: AbortController,
+    plan: ClaudeQueryPlan,
+    opts?: SendMessageOptions,
+  ): Promise<void> {
+    let status: TurnOutcome['status'] = 'completed';
+    let latestMessage: string | undefined;
+    const approval = text.match(MOCK_APPROVAL_RE);
+    try {
+      if (approval) {
+        const toolName = approval[1] ?? 'Bash';
+        const rest = (approval[2] ?? '').trim();
+        const input: Record<string, unknown> =
+          toolName.toLowerCase() === 'bash' || toolName.toLowerCase() === 'powershell'
+            ? { command: rest || 'mock-command' }
+            : { file_path: rest || 'mock.txt' };
+        const decision = await this.permissions.request({
+          toolName,
+          input,
+          sessionId: requestedSessionId,
+          turnId,
+          signal: abortController.signal,
+          timeoutMs: opts?.approvalTimeoutMs,
+          title: `Claude wants to use ${toolName}`,
+        });
+        if (abortController.signal.aborted) {
+          status = 'interrupted';
+          return;
+        }
+        latestMessage =
+          decision.behavior === 'deny'
+            ? `[mock Claude] Denied: ${decision.message ?? 'denied'}`
+            : `[mock Claude] Approved ${toolName}`;
+        target.items.push({ role: 'assistant', text: latestMessage, turnId });
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        if (
+          abortController.signal.aborted ||
+          this.activeTurns.get(requestedSessionId)?.turnId !== turnId
+        ) {
+          status = 'interrupted';
+          return;
+        }
+        const steers = target.items
+          .filter((item) => item.turnId === turnId && item.text.startsWith('[steer] '))
+          .map((item) => item.text.slice('[steer] '.length));
+        latestMessage = `[mock Claude] Received: ${text}`;
+        if (steers.length > 0) latestMessage += ` | steer: ${steers.join('; ')}`;
+        target.items.push({ role: 'assistant', text: latestMessage, turnId });
+      }
+    } finally {
+      target.preview = text.slice(0, 80);
+      target.updatedAt = Date.now();
+      if (target.activeTurnId === turnId) target.activeTurnId = undefined;
+      const outcome = this.makeOutcome(requestedSessionId, target.id, turnId, plan, status, latestMessage);
+      this.outcomes.set(requestedSessionId, outcome);
+      if (target.id !== requestedSessionId) this.outcomes.set(target.id, outcome);
+      this.activeTurns.delete(requestedSessionId);
+      if (target.id !== requestedSessionId) this.activeTurns.delete(target.id);
+    }
+  }
+
+  private cloneMock(source: MockDiscoveredSession): MockDiscoveredSession {
+    const copy: MockDiscoveredSession = {
+      ...source,
+      id: randomUUID(),
+      items: source.items.map((item) => ({ ...item })),
+      activeTurnId: undefined,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    this.mockSessions.set(copy.id, copy);
+    return copy;
+  }
+
+  private beginRealTurn(
     sessionId: string,
     text: string,
     cwd: string | undefined,
-    activeTurn: ActiveTurn,
-  ): Promise<void> {
+    binding: 'new' | 'resume',
+    opts?: SendMessageOptions,
+  ): SendMessageResult {
+    const plan = buildClaudeQueryOptions({
+      binding,
+      sessionId,
+      cwd,
+      turn: { ...opts, binding },
+      sessionModel: binding === 'resume' ? this.knownModel(sessionId) : undefined,
+    });
+    const turnId = `turn_${randomUUID().slice(0, 8)}`;
+    const stream = new ClaudePromptStream();
+    stream.push(text);
+    const abortController = new AbortController();
+    const activeTurn: ActiveTurn = {
+      turnId,
+      sessionId,
+      actualSessionId: sessionId,
+      startedAt: Date.now(),
+      prompt: text,
+      abortController,
+      stream,
+      plan,
+    };
+    this.prompts.set(sessionId, text);
+    this.activeTurns.set(sessionId, activeTurn);
+
+    void this.runQuery({
+      sessionId,
+      text,
+      cwd,
+      binding,
+      opts,
+      activeTurn,
+      stream,
+      plan,
+    }).catch((err) => {
+      console.error(`[claude] Background turn error for ${sessionId}:`, err);
+    });
+
+    return this.acceptedResult(sessionId, sessionId, turnId, plan);
+  }
+
+  private async runQuery(args: {
+    sessionId: string;
+    text: string;
+    cwd: string | undefined;
+    binding: 'new' | 'resume';
+    opts?: SendMessageOptions;
+    activeTurn: ActiveTurn;
+    stream: ClaudePromptStream;
+    plan: ClaudeQueryPlan;
+  }): Promise<void> {
+    const { sessionId, text, cwd, binding, opts, activeTurn, stream } = args;
+    let plan = args.plan;
+    let actualSessionId = sessionId;
+    let observedModel: string | undefined;
+    let latestMessage: string | undefined;
+    let outcomeStatus: TurnOutcome['status'] = 'completed';
+    let error: string | undefined;
+
     try {
-      const sdk = await import('@anthropic-ai/claude-agent-sdk');
-
-      const queryGen = sdk.query({
-        prompt: text,
-        options: {
-          resume: sessionId,
-          cwd,
-          maxTurns: 1,
-        },
-      });
-
-      for await (const msg of queryGen) {
-        if (activeTurn.abortController?.signal.aborted) {
-          break;
-        }
-        if (msg.type === 'result') {
-          break;
+      if (binding === 'resume' && plan.modelSource === 'cli-default') {
+        const sessionModel = await this.lookupSessionModel(sessionId, cwd);
+        if (sessionModel) {
+          plan = buildClaudeQueryOptions({
+            binding,
+            sessionId,
+            cwd,
+            turn: { ...opts, binding },
+            sessionModel,
+          });
+          activeTurn.plan = plan;
         }
       }
 
+      const sdk = await import('@anthropic-ai/claude-agent-sdk');
+      const abortController = activeTurn.abortController ?? new AbortController();
+      activeTurn.abortController = abortController;
+
+      const queryGen = sdk.query({
+        prompt: stream.iterate(),
+        options: {
+          ...plan.options,
+          abortController,
+          canUseTool: (toolName, input, sdkOptions) =>
+            this.permissions.request({
+              toolName,
+              input,
+              sessionId,
+              turnId: activeTurn.turnId,
+              signal: sdkOptions.signal,
+              suggestions: sdkOptions.suggestions,
+              title: sdkOptions.title,
+              description: sdkOptions.description,
+              decisionReason: sdkOptions.decisionReason,
+              blockedPath: sdkOptions.blockedPath,
+              toolUseID: sdkOptions.toolUseID,
+              timeoutMs: opts?.approvalTimeoutMs,
+            }),
+          // sessionId is a UUID from randomUUID(); the SDK brands that string.
+        } as NonNullable<Parameters<typeof sdk.query>[0]['options']>,
+      });
+      activeTurn.query = queryGen;
+
+      for await (const msg of queryGen) {
+        if (abortController.signal.aborted) {
+          outcomeStatus = 'interrupted';
+          break;
+        }
+        const reportedSessionId = readMessageSessionId(msg);
+        if (reportedSessionId) {
+          actualSessionId = reportedSessionId;
+          activeTurn.actualSessionId = reportedSessionId;
+          if (reportedSessionId !== sessionId) this.activeTurns.set(reportedSessionId, activeTurn);
+        }
+        const initModel = readInitModel(msg);
+        if (initModel) observedModel = initModel;
+        const result = readResultText(msg);
+        if (!result) continue;
+        if (result.text) latestMessage = result.text;
+        if (result.failed) {
+          outcomeStatus = 'failed';
+          error = result.error;
+        }
+        if (stream.queued === 0) stream.finish();
+      }
+    } catch (err) {
+      if (activeTurn.abortController?.signal.aborted) {
+        outcomeStatus = 'interrupted';
+      } else {
+        outcomeStatus = 'failed';
+        error = err instanceof Error ? err.message : String(err);
+        console.error(`[claude] Background turn error for ${sessionId}:`, err);
+      }
+    } finally {
+      stream.finish();
+      try {
+        activeTurn.query?.close();
+      } catch {
+        /* query already closed */
+      }
+      this.permissions.cancelSession(sessionId);
+      if (activeTurn.abortController?.signal.aborted) outcomeStatus = 'interrupted';
+
+      const model = observedModel ?? plan.model;
+      const forked = plan.forkSession || actualSessionId !== sessionId;
+      const resumeMode = forked && binding === 'resume' ? 'fork' : plan.resumeMode;
+      const outcome = this.makeOutcome(
+        sessionId,
+        actualSessionId,
+        activeTurn.turnId,
+        { ...plan, resumeMode, forkSession: forked },
+        outcomeStatus,
+        latestMessage,
+        error,
+        model,
+      );
+      this.outcomes.set(sessionId, outcome);
+      if (actualSessionId !== sessionId) this.outcomes.set(actualSessionId, outcome);
+
+      await this.persistTurn(sessionId, actualSessionId, cwd, text, model);
+      this.activeTurns.delete(sessionId);
+      if (actualSessionId !== sessionId) this.activeTurns.delete(actualSessionId);
+    }
+  }
+
+  private async lookupSessionModel(sessionId: string, cwd?: string): Promise<string | undefined> {
+    const known = this.knownModel(sessionId);
+    if (known) return known;
+    try {
+      const sdk = await import('@anthropic-ai/claude-agent-sdk');
+      const messages = await sdk.getSessionMessages(sessionId, { dir: cwd, limit: 40 });
+      return extractModelFromSessionMessages(messages);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async persistTurn(
+    sessionId: string,
+    actualSessionId: string,
+    cwd: string | undefined,
+    text: string,
+    model: string | undefined,
+  ): Promise<void> {
+    try {
+      const sdk = await import('@anthropic-ai/claude-agent-sdk');
       const registry = loadRegistry();
       const session = registry.sessions.find((s) => s.sessionId === sessionId);
       if (!session) {
@@ -497,64 +850,158 @@ export class ClaudeProvider implements SessionProvider {
         if (info) {
           registerSession({
             sessionId,
-            cwd: info.cwd ?? process.cwd(),
+            cwd: info.cwd ?? cwd ?? process.cwd(),
             name: info.customTitle ?? info.summary,
             preview: text.slice(0, 80),
+            model,
             createdAt: info.createdAt ?? Date.now(),
             updatedAt: Date.now(),
           });
         }
       } else {
-        updateSessionTimestamp(sessionId);
+        if (model) session.model = model;
+        session.preview = text.slice(0, 80);
+        session.updatedAt = Date.now();
+        saveRegistry(registry);
       }
-    } finally {
-      this.activeTurns.delete(sessionId);
+
+      if (actualSessionId !== sessionId) {
+        const again = loadRegistry();
+        if (!again.sessions.some((s) => s.sessionId === actualSessionId)) {
+          registerSession({
+            sessionId: actualSessionId,
+            cwd: cwd ?? process.cwd(),
+            name: `Fork of ${sessionId.slice(0, 8)}`,
+            preview: text.slice(0, 80),
+            model,
+            forkedFrom: sessionId,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          });
+        }
+      }
+    } catch (err) {
+      console.error(`[claude] Failed to persist session ${sessionId}:`, err);
     }
+  }
+
+  private acceptedResult(
+    requestedSessionId: string,
+    actualSessionId: string,
+    turnId: string,
+    plan: ClaudeQueryPlan,
+  ): SendMessageResult {
+    return {
+      sessionId: requestedSessionId,
+      requestedSessionId,
+      actualSessionId,
+      turnId,
+      status: 'accepted',
+      resumeMode: plan.resumeMode,
+      forked: plan.forkSession || actualSessionId !== requestedSessionId,
+      attachedToTerminal: false,
+      model: plan.model,
+      modelSource: plan.modelSource,
+      maxTurns: plan.maxTurns,
+      permissionMode: plan.permissionMode,
+      note: plan.note,
+    };
+  }
+
+  private makeOutcome(
+    requestedSessionId: string,
+    actualSessionId: string,
+    turnId: string,
+    plan: ClaudeQueryPlan,
+    status: TurnOutcome['status'],
+    latestMessage?: string,
+    error?: string,
+    model?: string,
+  ): TurnOutcome {
+    const forked = plan.forkSession || actualSessionId !== requestedSessionId;
+    return {
+      turnId,
+      status,
+      error,
+      latestMessage,
+      actualSessionId,
+      requestedSessionId,
+      resumeMode: forked && plan.resumeMode !== 'new' ? 'fork' : plan.resumeMode,
+      forked,
+      model: model ?? plan.model,
+      modelSource: !plan.model && model ? 'session' : plan.modelSource,
+      attachedToTerminal: false,
+      note: plan.note,
+    };
   }
 
   async interrupt(sessionId: string): Promise<InterruptResult> {
     if (useMock()) {
-      const mock = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
-      if (mock) {
-        const activeTurn = this.activeTurns.get(sessionId);
-        const turnId = activeTurn?.turnId ?? mock.activeTurnId;
+      const activeTurn = this.activeTurns.get(sessionId);
+      const mock =
+        this.mockSessions.get(sessionId) ??
+        this.mockDiscovered.get(sessionId) ??
+        (activeTurn
+          ? this.mockSessions.get(activeTurn.sessionId) ??
+            this.mockDiscovered.get(activeTurn.sessionId)
+          : undefined);
+      if (!mock) throw new Error(`Unknown mock session: ${sessionId}`);
 
-        if (activeTurn) {
-          activeTurn.abortController?.abort();
-          this.activeTurns.delete(sessionId);
-        }
-        mock.activeTurnId = undefined;
-
-        mock.items.push({
-          role: 'system',
-          text: '[mock] Interrupted',
-          turnId,
-        });
-        return { sessionId, turnId, status: 'interrupted' };
+      const turnId = activeTurn?.turnId ?? mock.activeTurnId;
+      if (activeTurn) {
+        activeTurn.abortController?.abort();
+        activeTurn.stream?.finish();
+        this.permissions.cancelSession(sessionId);
+        this.activeTurns.delete(sessionId);
+        if (activeTurn.sessionId !== sessionId) this.activeTurns.delete(activeTurn.sessionId);
       }
-      throw new Error(`Unknown mock session: ${sessionId}`);
+      mock.activeTurnId = undefined;
+      mock.items.push({
+        role: 'system',
+        text: '[mock] Interrupted',
+        turnId,
+      });
+      return { sessionId, turnId, status: 'interrupted' };
     }
 
     const activeTurn = this.activeTurns.get(sessionId);
     if (!activeTurn) {
-      return {
-        sessionId,
-        turnId: undefined,
-        status: 'no_active_turn',
-      };
+      return { sessionId, turnId: undefined, status: 'no_active_turn' };
     }
 
     activeTurn.abortController?.abort();
-    this.activeTurns.delete(sessionId);
+    activeTurn.stream?.finish();
+    this.permissions.cancelSession(sessionId);
+    try {
+      await activeTurn.query?.interrupt();
+    } catch {
+      /* The CLI process may already have exited. */
+    }
+    try {
+      activeTurn.query?.close();
+    } catch {
+      /* already closed */
+    }
 
-    return {
-      sessionId,
+    const plan = activeTurn.plan;
+    this.outcomes.set(sessionId, {
       turnId: activeTurn.turnId,
       status: 'interrupted',
-    };
+      actualSessionId: sessionId,
+      requestedSessionId: sessionId,
+      resumeMode: plan?.resumeMode ?? 'resume',
+      forked: plan?.forkSession ?? false,
+      model: plan?.model,
+      modelSource: plan?.modelSource ?? 'cli-default',
+      attachedToTerminal: false,
+      note: plan?.note ?? '',
+    });
+    this.activeTurns.delete(sessionId);
+
+    return { sessionId, turnId: activeTurn.turnId, status: 'interrupted' };
   }
 
-  async createSession(opts?: { cwd?: string; prompt?: string; name?: string; tags?: string[] }): Promise<CreateSessionResult> {
+  async createSession(opts?: CreateSessionOptions): Promise<CreateSessionResult> {
     if (useMock()) {
       const s = this.seedMock({
         cwd: opts?.cwd ?? process.cwd(),
@@ -562,97 +1009,103 @@ export class ClaudeProvider implements SessionProvider {
         preview: opts?.prompt?.slice(0, 80),
         tags: opts?.tags,
       });
+      const plan = buildClaudeQueryOptions({
+        binding: 'new',
+        sessionId: s.id,
+        cwd: s.cwd,
+        turn: opts,
+      });
+      if (plan.model) s.model = plan.model;
 
       if (opts?.prompt) {
-        const sendResult = await this.sendMessage(s.id, opts.prompt);
+        const sendResult = await this.sendMessage(s.id, opts.prompt, { ...opts, binding: 'new' });
         return {
           sessionId: s.id,
           provider: 'claude',
           cwd: s.cwd,
           status: 'accepted',
           turnId: sendResult.turnId,
+          model: sendResult.model,
+          modelSource: sendResult.modelSource,
+          resumeMode: 'new',
+          attachedToTerminal: false,
+          maxTurns: sendResult.maxTurns,
+          permissionMode: sendResult.permissionMode,
+          note: sendResult.note,
         };
       }
 
-      return { sessionId: s.id, provider: 'claude', cwd: s.cwd, status: 'created' };
+      return {
+        sessionId: s.id,
+        provider: 'claude',
+        cwd: s.cwd,
+        status: 'created',
+        model: plan.model,
+        modelSource: plan.modelSource,
+        resumeMode: 'new',
+        attachedToTerminal: false,
+        maxTurns: plan.maxTurns,
+        permissionMode: plan.permissionMode,
+        note: plan.note,
+      };
     }
 
     try {
       const sessionId: string = randomUUID();
       const now = Date.now();
+      const cwd = opts?.cwd ?? process.cwd();
+      const plan = buildClaudeQueryOptions({
+        binding: 'new',
+        sessionId,
+        cwd,
+        turn: opts,
+      });
 
       registerSession({
         sessionId,
-        cwd: opts?.cwd ?? process.cwd(),
+        cwd,
         name: opts?.name ?? opts?.prompt?.slice(0, 40) ?? 'Wingman session',
         preview: opts?.prompt?.slice(0, 80),
         tags: opts?.tags,
+        model: plan.model,
         createdAt: now,
         updatedAt: now,
       });
 
       if (opts?.prompt) {
-        const turnId = `turn_${randomUUID().slice(0, 8)}`;
-        const activeTurn: ActiveTurn = {
-          turnId,
-          sessionId,
-          startedAt: now,
-          abortController: new AbortController(),
-        };
-        this.activeTurns.set(sessionId, activeTurn);
-
-        this.runInitialTurnInBackground(sessionId, opts.prompt, opts.cwd, activeTurn).catch(
-          (err) => {
-            console.error(`[claude] Background initial turn error for ${sessionId}:`, err);
-          },
-        );
-
+        const sendResult = this.beginRealTurn(sessionId, opts.prompt, cwd, 'new', opts);
         return {
           sessionId,
           provider: 'claude',
-          cwd: opts?.cwd,
+          cwd,
           status: 'accepted',
-          turnId,
+          turnId: sendResult.turnId,
+          model: sendResult.model,
+          modelSource: sendResult.modelSource,
+          resumeMode: 'new',
+          attachedToTerminal: false,
+          maxTurns: sendResult.maxTurns,
+          permissionMode: sendResult.permissionMode,
+          note: sendResult.note,
         };
       }
 
-      return { sessionId, provider: 'claude', cwd: opts?.cwd, status: 'created' };
+      return {
+        sessionId,
+        provider: 'claude',
+        cwd,
+        status: 'created',
+        model: plan.model,
+        modelSource: plan.modelSource,
+        resumeMode: 'new',
+        attachedToTerminal: false,
+        maxTurns: plan.maxTurns,
+        permissionMode: plan.permissionMode,
+        note: plan.note,
+      };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`Failed to create Claude session: ${msg}`);
-    }
-  }
-
-  private async runInitialTurnInBackground(
-    sessionId: string,
-    prompt: string,
-    cwd: string | undefined,
-    activeTurn: ActiveTurn,
-  ): Promise<void> {
-    try {
-      const sdk = await import('@anthropic-ai/claude-agent-sdk');
-
-      const queryGen = sdk.query({
-        prompt,
-        options: {
-          sessionId: sessionId as `${string}-${string}-${string}-${string}-${string}`,
-          cwd,
-          maxTurns: 1,
-        },
-      });
-
-      for await (const msg of queryGen) {
-        if (activeTurn.abortController?.signal.aborted) {
-          break;
-        }
-        if (msg.type === 'result') {
-          break;
-        }
-      }
-
-      updateSessionTimestamp(sessionId);
-    } finally {
-      this.activeTurns.delete(sessionId);
     }
   }
 
@@ -662,102 +1115,181 @@ export class ClaudeProvider implements SessionProvider {
 
     if (useMock()) {
       const mock = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
-      if (!mock) throw new Error(`Unknown mock session: ${sessionId}`);
+      const active = this.activeTurns.get(sessionId);
+      const target = mock ?? (active
+        ? this.mockSessions.get(active.sessionId) ?? this.mockDiscovered.get(active.sessionId)
+        : undefined);
+      if (!target && !mock) throw new Error(`Unknown mock session: ${sessionId}`);
 
       const activeTurn = this.activeTurns.get(sessionId);
       if (!activeTurn) {
-        const lastAssistant = [...mock.items].reverse().find((i) => i.role === 'assistant');
-        return {
-          sessionId,
-          status: 'idle',
-          latestMessage: lastAssistant?.text?.slice(0, 200),
-        };
+        return this.idleWait(sessionId, target?.items ?? mock?.items ?? []);
       }
+
+      const pendingNow = this.pendingWait(sessionId, activeTurn);
+      if (pendingNow) return pendingNow;
 
       const turnId = activeTurn.turnId;
       const startTime = Date.now();
 
       while (Date.now() - startTime < timeoutMs) {
+        const pending = this.pendingWait(sessionId, activeTurn);
+        if (pending) return pending;
+
         await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
 
         const currentTurn = this.activeTurns.get(sessionId);
         if (!currentTurn || currentTurn.turnId !== turnId) {
-          const lastAssistant = [...mock.items]
-            .reverse()
-            .find((i) => i.role === 'assistant' && i.turnId === turnId);
-          return {
-            sessionId,
-            turnId,
-            status: 'completed',
-            latestMessage: lastAssistant?.text?.slice(0, 200),
-          };
+          return this.finishedWait(sessionId, turnId, target?.items ?? mock?.items ?? []);
         }
       }
 
-      return { sessionId, turnId, status: 'timeout' };
+      return { sessionId, turnId, status: 'timeout', attachedToTerminal: false, note: activeTurn.plan?.note };
     }
 
     const activeTurn = this.activeTurns.get(sessionId);
     if (!activeTurn) {
-      return { sessionId, status: 'idle' };
+      return this.idleWait(sessionId);
     }
+
+    const pendingNow = this.pendingWait(sessionId, activeTurn);
+    if (pendingNow) return pendingNow;
 
     const turnId = activeTurn.turnId;
     const startTime = Date.now();
 
     while (Date.now() - startTime < timeoutMs) {
+      const pending = this.pendingWait(sessionId, activeTurn);
+      if (pending) return pending;
+
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
 
       const currentTurn = this.activeTurns.get(sessionId);
       if (!currentTurn || currentTurn.turnId !== turnId) {
+        let latest: string | undefined;
         try {
           const transcript = await this.readTranscript(sessionId, 10);
-          const lastAssistant = [...transcript.items].reverse().find((i) => i.role === 'assistant');
-          return {
-            sessionId,
-            turnId,
-            status: 'completed',
-            latestMessage: lastAssistant?.text?.slice(0, 200),
-          };
+          latest = [...transcript.items].reverse().find((item) => item.role === 'assistant')?.text;
         } catch {
-          return { sessionId, turnId, status: 'completed' };
+          latest = undefined;
         }
+        return this.finishedWait(sessionId, turnId, undefined, latest);
       }
     }
 
-    return { sessionId, turnId, status: 'timeout' };
+    return {
+      sessionId,
+      turnId,
+      status: 'timeout',
+      attachedToTerminal: false,
+      note: activeTurn.plan?.note,
+    };
   }
 
-  async steer(_sessionId: string, _text: string): Promise<SteerResult> {
+  private pendingWait(sessionId: string, activeTurn: ActiveTurn): WaitTurnResult | undefined {
+    const approvals = this.permissions.list(sessionId);
+    if (approvals.length === 0) return undefined;
     return {
-      sessionId: _sessionId,
-      accepted: false,
-      error:
-        'Claude does not support mid-turn steering. Use interrupt() to stop the current turn, ' +
-        'then send_message() with your new instructions.',
+      sessionId,
+      turnId: activeTurn.turnId,
+      status: 'inProgress',
+      latestMessage: `Waiting for ${approvals.length} approval(s)`,
+      attachedToTerminal: false,
+      resumeMode: activeTurn.plan?.resumeMode,
+      note: activeTurn.plan?.note,
     };
+  }
+
+  private idleWait(sessionId: string, items?: TranscriptItem[]): WaitTurnResult {
+    const outcome = this.outcomes.get(sessionId);
+    const lastAssistant = items
+      ? [...items].reverse().find((item) => item.role === 'assistant')
+      : undefined;
+    return {
+      sessionId,
+      status: 'idle',
+      latestMessage: lastAssistant?.text?.slice(0, 200) ?? outcome?.latestMessage?.slice(0, 200),
+      actualSessionId: outcome?.actualSessionId,
+      resumeMode: outcome?.resumeMode,
+      forked: outcome?.forked,
+      attachedToTerminal: outcome ? false : undefined,
+      model: outcome?.model,
+      note: outcome?.note,
+    };
+  }
+
+  private finishedWait(
+    sessionId: string,
+    turnId: string,
+    items?: TranscriptItem[],
+    fallbackLatest?: string,
+  ): WaitTurnResult {
+    const outcome = this.outcomes.get(sessionId);
+    const matched = outcome?.turnId === turnId ? outcome : undefined;
+    const lastAssistant = items
+      ? [...items].reverse().find((item) => item.role === 'assistant' && item.turnId === turnId)
+      : undefined;
+    return {
+      sessionId,
+      turnId,
+      status: matched?.status ?? 'completed',
+      latestMessage: (lastAssistant?.text ?? matched?.latestMessage ?? fallbackLatest)?.slice(0, 200),
+      error: matched?.error,
+      actualSessionId: matched?.actualSessionId,
+      resumeMode: matched?.resumeMode,
+      forked: matched?.forked,
+      attachedToTerminal: false,
+      model: matched?.model,
+      note: matched?.note,
+    };
+  }
+
+  async steer(sessionId: string, text: string): Promise<SteerResult> {
+    const activeTurn = this.activeTurns.get(sessionId);
+    if (useMock()) {
+      const mock = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
+      const target = activeTurn
+        ? this.mockSessions.get(activeTurn.sessionId) ??
+          this.mockDiscovered.get(activeTurn.sessionId) ??
+          mock
+        : mock;
+      if (!target && !mock) throw new Error(`Unknown mock session: ${sessionId}`);
+      if (!activeTurn) {
+        return { sessionId, accepted: false, error: NO_ACTIVE_STEER };
+      }
+      (target ?? mock)?.items.push({
+        role: 'user',
+        text: `[steer] ${text}`,
+        turnId: activeTurn.turnId,
+      });
+      return { sessionId, turnId: activeTurn.turnId, accepted: true };
+    }
+
+    if (!activeTurn?.stream || activeTurn.stream.isFinished) {
+      return { sessionId, accepted: false, error: NO_ACTIVE_STEER };
+    }
+    const accepted = activeTurn.stream.push(text, 'now');
+    if (!accepted) {
+      return {
+        sessionId,
+        turnId: activeTurn.turnId,
+        accepted: false,
+        error: 'Turn is already finishing. Use send_message for a new turn.',
+      };
+    }
+    return { sessionId, turnId: activeTurn.turnId, accepted: true };
   }
 
   async listApprovals(sessionId: string): Promise<ListApprovalsResult> {
-    return {
-      sessionId,
-      approvals: [],
-    };
+    return { sessionId, approvals: this.permissions.list(sessionId) };
   }
 
   async resolveApproval(
     sessionId: string,
     approvalId: string,
-    _decision: ApprovalDecision,
+    decision: ApprovalDecision,
   ): Promise<ResolveApprovalResult> {
-    return {
-      sessionId,
-      approvalId,
-      resolved: false,
-      error:
-        'Claude does not support programmatic approval resolution. Approvals must be handled ' +
-        'in the local Claude CLI session directly.',
-    };
+    return this.permissions.resolve(sessionId, approvalId, decision);
   }
 
   async setSessionMeta(

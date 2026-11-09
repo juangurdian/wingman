@@ -161,9 +161,9 @@ Once connected, Muse can use these Wingman MCP tools:
 | `interrupt` | Stop an in-progress turn |
 | `create_session` | Start a new Codex/Claude session |
 | `wait_turn` | Wait for a turn to complete |
-| `steer` | Add mid-turn guidance (Codex only) |
-| `list_approvals` | List pending approvals (Codex only) |
-| `resolve_approval` | Resolve a pending approval (Codex only) |
+| `steer` | Add guidance to an in-flight Codex or Claude turn |
+| `list_approvals` | List pending Codex or Claude approvals |
+| `resolve_approval` | Resolve a pending approval (`accept`, `acceptForSession`, `decline`, `cancel`) |
 | `set_session_meta` | Set session name/tags |
 | `export_transcript` | Export transcript as Markdown/JSON |
 
