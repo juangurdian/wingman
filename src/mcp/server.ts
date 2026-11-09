@@ -20,7 +20,6 @@ import {
   SteerSchema,
   ListApprovalsSchema,
   ResolveApprovalSchema,
-  ApprovalDecisionSchema,
   SetSessionMetaSchema,
   ExportTranscriptSchema,
   ExportFormatSchema,
@@ -119,12 +118,12 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
     server.registerTool(
       'send_message',
       {
-        description: 'Send a user message into an existing session (starts a turn for Codex).',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-          text: z.string(),
-        },
+        description:
+          'Send a user message into an existing session. Codex starts a turn. ' +
+          'Claude resumes that session id in a headless query (fork_session true copies it instead) ' +
+          'with a configurable turn budget, permission mode, tool allow and deny lists, and model. ' +
+          'Omit model to inherit the Claude session model. A headless Claude turn is not shown in an already-open interactive terminal.',
+        inputSchema: SendMessageSchema.shape,
       },
       async (args) => handlers.send_message(SendMessageSchema.parse(args)),
     );
@@ -145,15 +144,10 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'create_session',
       {
         description:
-          'Create a new session (Codex: thread/start). Optional cwd, initial prompt, name, tags, and model override (Codex only).',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          cwd: z.string().optional(),
-          prompt: z.string().optional(),
-          name: z.string().optional(),
-          tags: z.array(z.string()).optional(),
-          model: z.string().optional().describe('Model override for Codex sessions. Optional; defaults to Codex config/defaults. Ignored for other providers.'),
-        },
+          'Create a new session. Codex: thread/start, optional model override (otherwise Codex config). ' +
+          'Claude: new headless session. Optional model, max_turns (default 50), permission_mode, ' +
+          'allowed_tools, and disallowed_tools. Omit model to let Claude Code pick; later send_message calls inherit the session model.',
+        inputSchema: CreateSessionSchema.shape,
       },
       async (args) => handlers.create_session(CreateSessionSchema.parse(args)),
     );
@@ -175,14 +169,10 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'wait_turn',
       {
         description:
-          'Wait for an active Codex turn to complete, fail, be interrupted, or timeout. ' +
-          'Returns status and latest message snippet. Use instead of polling read_transcript.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-          timeout_ms: z.number().int().positive().max(300_000).optional(),
-          poll_interval_ms: z.number().int().positive().max(10_000).optional(),
-        },
+          'Wait for an active Codex or Claude turn to complete, fail, be interrupted, or time out. ' +
+          'Returns early with status inProgress while a permission prompt is waiting. ' +
+          'Use instead of polling read_transcript.',
+        inputSchema: WaitTurnSchema.shape,
       },
       async (args) => handlers.wait_turn(WaitTurnSchema.parse(args)),
     );
@@ -191,13 +181,11 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'steer',
       {
         description:
-          'Add guidance to an in-flight Codex turn without starting a new turn. ' +
-          'Use this to provide mid-turn input like follow-up instructions or clarifications.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-          text: z.string(),
-        },
+          'Add guidance to an in-flight turn without starting a new one. ' +
+          'Codex uses turn/steer. Claude queues a user message on the active headless query ' +
+          '(priority now). It does not steer an interactive terminal. ' +
+          'If no Wingman turn is active, interrupt or send_message instead.',
+        inputSchema: SteerSchema.shape,
       },
       async (args) => handlers.steer(SteerSchema.parse(args)),
     );
@@ -206,12 +194,11 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'list_approvals',
       {
         description:
-          'List pending approval requests for a Codex session. ' +
-          'Approvals are required for sandbox commands, file changes, or network access.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-        },
+          'List pending approval requests for a Codex or Claude session. ' +
+          'Claude prompts come from the Agent SDK canUseTool callback ' +
+          '(commands, file changes, network, and other tools). ' +
+          'An unanswered Claude prompt is denied when the approval timeout elapses.',
+        inputSchema: ListApprovalsSchema.shape,
       },
       async (args) => handlers.list_approvals(ListApprovalsSchema.parse(args)),
     );
@@ -220,13 +207,10 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'resolve_approval',
       {
         description:
-          'Resolve a pending Codex approval request. Decisions: accept, acceptForSession, decline, cancel.',
-        inputSchema: {
-          provider: z.literal('codex'),
-          session_id: z.string(),
-          approval_id: z.string(),
-          decision: ApprovalDecisionSchema,
-        },
+          'Resolve a pending Codex or Claude approval. ' +
+          'Decisions: accept, acceptForSession (allow the same tool again for this session), decline, cancel. ' +
+          'cancel denies the tool and interrupts the Claude turn.',
+        inputSchema: ResolveApprovalSchema.shape,
       },
       async (args) => handlers.resolve_approval(ResolveApprovalSchema.parse(args)),
     );

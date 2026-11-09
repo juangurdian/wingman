@@ -72,6 +72,9 @@ After pairing, prefer these tools (in order):
 3. `send_message` — `{ "provider": "...", "session_id": "...", "text": "..." }`
 4. `interrupt` — if a turn is stuck
 5. `create_session` — `{ "provider": "...", "cwd": "...", "prompt": "...", "model": "..." }`
+6. `wait_turn`: long-poll a Codex or Claude turn. It returns early while an approval is pending.
+7. `list_approvals` / `resolve_approval`: Codex and Claude. An unanswered Claude prompt is denied.
+8. `steer`: mid-turn guidance. Claude queues it on the headless query Wingman owns.
 
 ### Multi-host identification
 
@@ -84,9 +87,12 @@ Sessions now include `hostId` and `hostName` fields so MCP clients can tell whic
 - `turn/start`, `turn/interrupt`
 
 **Claude** uses `@anthropic-ai/claude-agent-sdk`:
-- `query()` with `resume` option for sending messages
+- `query()` with `resume` and `forkSession: false` to continue the same session id (`fork_session: true` copies it)
+- `maxTurns` defaults to 50. Permission prompts go through `canUseTool` to `list_approvals`
+- Model is not hardcoded. Omit it to inherit the session model, or set `model` / `WINGMAN_CLAUDE_MODEL`
 - `listSessions()`, `getSessionMessages()` for reading
-- `query().interrupt()` for interrupting
+- `query().interrupt()` for interrupting a Wingman-owned headless query
+- A headless resume is not shown in an already-open interactive terminal
 - **Session discovery**: `list_sessions` can discover existing Claude sessions created via CLI or IDE (not just Wingman sessions)
 
 ### Claude session discovery
@@ -118,7 +124,11 @@ If session creation fails due to model access, either ensure you have the requir
 |----------|---------|-------------|
 | `CLAUDE_MOCK` | `0` | Enable mock mode with simulated sessions |
 | `CLAUDE_DISCOVER` | `1` | Enable session discovery (set `0` to disable) |
-| `CLAUDE_DISCOVER_DIRS` | (all) | Colon-separated directories to search |
+| `CLAUDE_DISCOVER_DIRS` | (all) | Directories to search, split on the OS path delimiter (`:` or `;` on Windows) |
+| `WINGMAN_CLAUDE_MAX_TURNS` | `50` | Agent turns per Claude query |
+| `WINGMAN_CLAUDE_PERMISSION_MODE` | `default` | Permission mode passed to the Agent SDK |
+| `WINGMAN_CLAUDE_MODEL` | unset | Optional model override. Unset inherits the session model |
+| `WINGMAN_CLAUDE_APPROVAL_TIMEOUT_MS` | `120000` | Deny an unanswered Claude permission prompt |
 
 ## Session scope
 

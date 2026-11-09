@@ -18,10 +18,58 @@ export const ReadTranscriptSchema = z.object({
   limit: z.number().int().positive().max(500).optional(),
 });
 
+export const ClaudePermissionModeSchema = z.enum([
+  'default',
+  'acceptEdits',
+  'bypassPermissions',
+  'plan',
+  'dontAsk',
+  'auto',
+]);
+
+const claudeTurnFields = {
+  max_turns: z
+    .number()
+    .int()
+    .positive()
+    .max(500)
+    .optional()
+    .describe('Claude agent turns before the query stops. Default 50. Ignored by Codex.'),
+  permission_mode: ClaudePermissionModeSchema.optional().describe(
+    'Claude permission mode. Default "default" so tool prompts reach list_approvals. Ignored by Codex.',
+  ),
+  allowed_tools: z
+    .array(z.string())
+    .optional()
+    .describe('Claude tools that run without a permission prompt. Ignored by Codex.'),
+  disallowed_tools: z
+    .array(z.string())
+    .optional()
+    .describe('Claude tools removed from the session. Ignored by Codex.'),
+  approval_timeout_ms: z
+    .number()
+    .int()
+    .positive()
+    .max(600_000)
+    .optional()
+    .describe('Claude: deny a permission prompt that is not resolved in time. Default 120000.'),
+};
+
 export const SendMessageSchema = z.object({
   provider: ProviderSchema,
   session_id: z.string().min(1),
   text: z.string().min(1),
+  model: z
+    .string()
+    .optional()
+    .describe(
+      'Claude model override for this turn. Omit to inherit the session model. Does not apply to Codex.',
+    ),
+  fork_session: z
+    .boolean()
+    .optional()
+    .describe('Claude: true copies the session onto a new id. Default false resumes the same id.'),
+  ...claudeTurnFields,
 });
 
 export const InterruptSchema = z.object({
@@ -35,8 +83,13 @@ export const CreateSessionSchema = z.object({
   prompt: z.string().optional(),
   name: z.string().optional(),
   tags: z.array(z.string()).optional(),
-  /** Model override for Codex sessions. Optional; defaults to Codex config/defaults. Ignored for other providers. */
+  /**
+   * Model override. Codex: optional, else Codex config.
+   * Claude: optional. Omit to let Claude Code pick for a new session.
+   * A later send_message inherits the session model when this is unset.
+   */
   model: z.string().optional(),
+  ...claudeTurnFields,
 });
 
 export const SetSessionMetaSchema = z.object({
@@ -169,9 +222,15 @@ export function createToolHandlers(providers: ProviderRegistry) {
 
     async send_message(args: z.infer<typeof SendMessageSchema>) {
       try {
-        const result = await providers
-          .get(args.provider)
-          .sendMessage(args.session_id, args.text);
+        const result = await providers.get(args.provider).sendMessage(args.session_id, args.text, {
+          maxTurns: args.max_turns,
+          permissionMode: args.permission_mode,
+          allowedTools: args.allowed_tools,
+          disallowedTools: args.disallowed_tools,
+          model: args.model,
+          forkSession: args.fork_session,
+          approvalTimeoutMs: args.approval_timeout_ms,
+        });
         return textResult(result);
       } catch (err) {
         return errorResult(err);
@@ -199,6 +258,11 @@ export function createToolHandlers(providers: ProviderRegistry) {
           name: args.name,
           tags: args.tags,
           model: args.model,
+          maxTurns: args.max_turns,
+          permissionMode: args.permission_mode,
+          allowedTools: args.allowed_tools,
+          disallowedTools: args.disallowed_tools,
+          approvalTimeoutMs: args.approval_timeout_ms,
         });
         return textResult(result);
       } catch (err) {

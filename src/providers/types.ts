@@ -1,6 +1,6 @@
 /**
  * Thin provider interface for coding-agent session backends.
- * Codex is first-class; Claude is stubbed.
+ * Codex, Claude Code, and Muse each implement the same session tools.
  */
 
 export type ProviderName = 'codex' | 'claude' | 'muse';
@@ -44,10 +44,34 @@ export interface Transcript {
   items: TranscriptItem[];
 }
 
+export type ClaudeResumeMode = 'new' | 'resume' | 'fork';
+
+export type ClaudeModelSource = 'call' | 'env' | 'session' | 'cli-default';
+
 export interface SendMessageResult {
   sessionId: string;
   turnId?: string;
   status: string;
+  /**
+   * How this turn was bound. `resume` keeps the requested session id,
+   * `fork` copies it, `new` starts one. The CLI can still fork a resume
+   * when an interactive terminal holds the session; see `actualSessionId`.
+   */
+  resumeMode?: ClaudeResumeMode;
+  /** Session id the caller addressed. */
+  requestedSessionId?: string;
+  /** Session id the CLI is actually writing, once known. */
+  actualSessionId?: string;
+  /** True when the caller asked to fork, or the CLI id differs from the request. */
+  forked?: boolean;
+  /** Headless queries do not attach to an open interactive terminal. */
+  attachedToTerminal?: boolean;
+  model?: string;
+  modelSource?: ClaudeModelSource;
+  maxTurns?: number;
+  permissionMode?: string;
+  /** Plain-language resume/fork and terminal-visibility note. */
+  note?: string;
 }
 
 export interface InterruptResult {
@@ -64,8 +88,18 @@ export interface CreateSessionResult {
   status?: 'created' | 'accepted';
   /** Turn ID when prompt is provided and status is 'accepted' */
   turnId?: string;
-  /** Model used for the session (Codex-specific; from explicit arg or WINGMAN_CODEX_MODEL) */
+  /**
+   * Model used for the session.
+   * Codex: explicit arg or WINGMAN_CODEX_MODEL.
+   * Claude: explicit arg, WINGMAN_CLAUDE_MODEL, or omitted so Claude Code picks.
+   */
   model?: string;
+  modelSource?: ClaudeModelSource;
+  resumeMode?: ClaudeResumeMode;
+  attachedToTerminal?: boolean;
+  maxTurns?: number;
+  permissionMode?: string;
+  note?: string;
 }
 
 export interface SessionDetail extends SessionSummary {
@@ -73,6 +107,16 @@ export interface SessionDetail extends SessionSummary {
   activeTurnStartedAt?: number;
   /** User-set tags for categorization/filtering. */
   tags?: string[];
+  /** Model Wingman last observed or requested for this session. */
+  model?: string;
+  modelSource?: ClaudeModelSource;
+  resumeMode?: ClaudeResumeMode;
+  requestedSessionId?: string;
+  actualSessionId?: string;
+  forked?: boolean;
+  /** False for headless Claude queries. They do not appear in an open terminal. */
+  attachedToTerminal?: boolean;
+  note?: string;
 }
 
 export interface WaitTurnOptions {
@@ -85,12 +129,21 @@ export interface WaitTurnOptions {
 export interface WaitTurnResult {
   sessionId: string;
   turnId?: string;
-  /** Final status: 'completed' | 'interrupted' | 'failed' | 'timeout' | 'idle' */
-  status: 'completed' | 'interrupted' | 'failed' | 'timeout' | 'idle';
+  /**
+   * Final status. `inProgress` means the turn is still running, often because
+   * a permission prompt is waiting on list_approvals / resolve_approval.
+   */
+  status: 'completed' | 'interrupted' | 'failed' | 'timeout' | 'idle' | 'inProgress';
   /** Snippet of the latest agent message if available */
   latestMessage?: string;
   /** Error message if status is 'failed' */
   error?: string;
+  resumeMode?: ClaudeResumeMode;
+  actualSessionId?: string;
+  forked?: boolean;
+  attachedToTerminal?: boolean;
+  model?: string;
+  note?: string;
 }
 
 export interface SteerResult {
@@ -122,6 +175,8 @@ export interface Approval {
   cwd?: string;
   /** Description / reason for the approval */
   reason?: string;
+  /** Claude tool name when the prompt came from canUseTool. */
+  toolName?: string;
   /** Timestamp when approval was requested */
   requestedAt: number;
 }
@@ -166,8 +221,45 @@ export interface CreateSessionOptions {
   prompt?: string;
   name?: string;
   tags?: string[];
-  /** Model override for Codex sessions. Optional; defaults to Codex config/defaults. */
+  /**
+   * Model override.
+   * Codex: optional; defaults to Codex config.
+   * Claude: optional; when omitted, a new session uses Claude Code's default
+   * and a later send_message inherits the session model.
+   */
   model?: string;
+  /** Claude agent-turn budget for the initial prompt. Default 50. */
+  maxTurns?: number;
+  /** Claude permission mode for the initial prompt. Default "default". */
+  permissionMode?: string;
+  /** Claude tools that skip the permission prompt. */
+  allowedTools?: string[];
+  /** Claude tools removed from the session. */
+  disallowedTools?: string[];
+  /** Claude: deny an unanswered permission prompt after this many milliseconds. */
+  approvalTimeoutMs?: number;
+}
+
+export interface SendMessageOptions {
+  /** Claude agent-turn budget. Default 50. Ignored by Codex. */
+  maxTurns?: number;
+  /** Claude permission mode. Default "default". Ignored by Codex. */
+  permissionMode?: string;
+  /** Claude tools that skip the permission prompt. */
+  allowedTools?: string[];
+  /** Claude tools removed from the session. */
+  disallowedTools?: string[];
+  /**
+   * Model override for this Claude turn.
+   * Omit to inherit the session model (or Claude Code's default when none is known).
+   */
+  model?: string;
+  /** Claude: true copies the session onto a new id. Default false resumes the same id. */
+  forkSession?: boolean;
+  /** Claude: deny an unanswered permission prompt after this many milliseconds. */
+  approvalTimeoutMs?: number;
+  /** Internal. create_session's first prompt is a new session, not a resume. */
+  binding?: 'new' | 'resume';
 }
 
 export interface SessionProvider {
@@ -175,17 +267,20 @@ export interface SessionProvider {
   listSessions(): Promise<SessionSummary[]>;
   getSession?(sessionId: string): Promise<SessionDetail | null>;
   readTranscript(sessionId: string, limit?: number): Promise<Transcript>;
-  sendMessage(sessionId: string, text: string): Promise<SendMessageResult>;
+  sendMessage(sessionId: string, text: string, opts?: SendMessageOptions): Promise<SendMessageResult>;
   interrupt(sessionId: string): Promise<InterruptResult>;
   createSession?(opts?: CreateSessionOptions): Promise<CreateSessionResult>;
   
-  /** Wait for an active turn to complete (Codex-specific) */
+  /** Wait for an active turn to complete, or to pause on a permission prompt. */
   waitTurn?(sessionId: string, opts?: WaitTurnOptions): Promise<WaitTurnResult>;
-  /** Add guidance to an in-flight turn without starting a new turn (Codex-specific) */
+  /**
+   * Add guidance to an in-flight turn without starting a new turn.
+   * Codex uses turn/steer. Claude queues a user message on the headless query.
+   */
   steer?(sessionId: string, text: string): Promise<SteerResult>;
-  /** List pending approvals for a session (Codex-specific) */
+  /** List pending approvals for a session. */
   listApprovals?(sessionId: string): Promise<ListApprovalsResult>;
-  /** Resolve a pending approval (Codex-specific) */
+  /** Resolve a pending approval. */
   resolveApproval?(sessionId: string, approvalId: string, decision: ApprovalDecision): Promise<ResolveApprovalResult>;
   /** Set session metadata (name, tags) for easier discovery */
   setSessionMeta?(sessionId: string, meta: SetSessionMetaOptions): Promise<SetSessionMetaResult>;

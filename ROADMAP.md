@@ -50,7 +50,7 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | Tests | ✅ | Unit tests for all new features |
 | ROADMAP + README polish | ✅ | Clear positioning; SDK resume ≠ TTY typing |
 | Codex wait/steer/approvals | ✅ | `wait_turn`, `steer`, `list_approvals`, `resolve_approval` tools; mock coverage |
-| Claude wait_turn parity | ✅ | `wait_turn` for Claude sessions; soft stubs for steer/approvals with clear errors |
+| Claude wait/steer/approvals | ✅ | `wait_turn` and `steer` for Claude sessions; `list_approvals` / `resolve_approval` via `canUseTool`, with a timeout that denies |
 | Codex model override | ✅ | `WINGMAN_CODEX_MODEL` env var + `model` arg on `create_session`; doctor checks for models that may require API access |
 | Host identity / multi-host | ✅ | `WINGMAN_HOST_ID`/`WINGMAN_HOST_NAME` config; `hostId`/`hostName` in session responses; [multi-host guide](docs/hosts/multi-host.md) |
 
@@ -107,7 +107,7 @@ Wingman intentionally does **not** do:
 - **Multi-agent IDE** — Wingman is a bridge, not a replacement for your editor or IDE
 - **Persistent daemon** — Wingman runs when you pair; no system service / always-on process
 - **Secrets management** — Bring your own API keys; Wingman only generates its bearer token
-- **Auto-approve sandbox prompts** — Approvals belong to the local agent client, not the remote host
+- **Auto-approve sandbox prompts**: Wingman does not silently approve tool calls. Codex and Claude prompts show up in `list_approvals`. An unanswered Claude prompt is denied.
 - **Replace Codex/Claude CLI** — Wingman wraps the official SDKs; use the CLIs directly for full features
 
 ## Competitive Landscape

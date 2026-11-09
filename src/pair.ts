@@ -72,6 +72,8 @@ Environment:
   WINGMAN_HOST_ID       Machine identifier for multi-host setups
   WINGMAN_HOST_NAME     Human-friendly host name for display
   WINGMAN_CODEX_MODEL   Override Codex model for Wingman sessions (optional)
+  WINGMAN_CLAUDE_MODEL  Optional Claude model override (unset inherits the session model)
+  WINGMAN_CLAUDE_MAX_TURNS  Claude agent turns per query (default 50)
 
 Real mode:
   Codex:  requires \`codex\` on PATH (uses \`codex app-server\` JSON-RPC)
