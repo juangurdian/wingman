@@ -182,7 +182,8 @@ Example config block (use full token from ${cfgPath}):
 USAGE
 
 After pairing, the MCP host can call:
-  • list_sessions(provider="codex" | "claude")
+  • list_sessions(provider="codex" | "claude", state="live" | "past" | "all")
+  • list_claude_live_sessions / send_to_claude_session
   • create_session(provider, cwd?, prompt?)
   • read_transcript / send_message / interrupt
 

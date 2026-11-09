@@ -63,6 +63,24 @@ describe('ClaudePermissionBroker', () => {
     expect(again.behavior).toBe('allow');
     expect(broker.list('sess-1')).toEqual([]);
 
+    const sharedHead = `${'a'.repeat(500)}TAIL-ONE`;
+    const differentTail = `${'a'.repeat(500)}TAIL-TWO`;
+    const long = request(broker, { input: { command: sharedHead } });
+    const longId = broker.list('sess-1')[0]!.id;
+    broker.resolve('sess-1', longId, 'acceptForSession');
+    await long.pending;
+    const same = await broker.request({
+      toolName: 'Bash',
+      input: { command: sharedHead },
+      sessionId: 'sess-1',
+      signal: new AbortController().signal,
+    });
+    expect(same.behavior).toBe('allow');
+    const tail = request(broker, { input: { command: differentTail } });
+    expect(broker.list('sess-1')).toHaveLength(1);
+    broker.resolve('sess-1', broker.list('sess-1')[0]!.id, 'decline');
+    await expect(tail.pending).resolves.toMatchObject({ behavior: 'deny' });
+
     const other = request(broker, { input: { command: 'git push' } });
     expect(broker.list('sess-1')).toHaveLength(1);
     broker.resolve('sess-1', broker.list('sess-1')[0]!.id, 'decline');

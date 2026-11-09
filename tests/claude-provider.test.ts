@@ -95,6 +95,28 @@ describe('ClaudeProvider mock mode', () => {
     expect(transcriptAfter.items.some(i => i.text.includes('[mock Claude]'))).toBe(true);
   });
 
+  it('rejects a second send while a mock turn is active', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const sessions = await provider.listSessions();
+    const sessionId = sessions[0].id;
+    await provider.sendMessage(sessionId, 'first');
+    await expect(provider.sendMessage(sessionId, 'second')).rejects.toThrow(/turn already active/);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const again = await provider.sendMessage(sessionId, 'third');
+    expect(again.status).toBe('accepted');
+  });
+
+  it('marks wingman mock sessions live and discovered sessions past', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const live = await provider.listSessions({ state: 'live' });
+    const past = await provider.listSessions({ state: 'past' });
+    expect(live.every((session) => session.live === true)).toBe(true);
+    expect(past.every((session) => session.live !== true)).toBe(true);
+    expect(live.length).toBeGreaterThan(0);
+  });
+
   it('readTranscript returns items for mock session', async () => {
     const { ClaudeProvider } = await import('../src/providers/claude.js');
     const provider = new ClaudeProvider();

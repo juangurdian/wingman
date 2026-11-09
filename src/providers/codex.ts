@@ -15,8 +15,10 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
+import WebSocket from 'ws';
 import type {
   Approval,
   SessionActivity,
@@ -43,7 +45,18 @@ import {
   resolveCodexModel,
   resolveHostId,
   resolveHostName,
+  codexSocketExists,
+  defaultCodexSocketPath,
+  resolveCodexSocket,
+  useCodexAttachMode,
 } from '../config.js';
+
+type ConnectionMode = 'spawn' | 'attach';
+
+/** Codex app-server hangs up if the client offers permessage-deflate. */
+export function codexSocketClientOptions(): { perMessageDeflate: false } {
+  return { perMessageDeflate: false };
+}
 
 type JsonRpcId = number;
 type Pending = {
@@ -90,6 +103,11 @@ export class CodexProvider implements SessionProvider {
   readonly name = 'codex' as const;
   private mockSessions = new Map<string, MockSession>();
   private proc: ChildProcessWithoutNullStreams | null = null;
+  private ws: WebSocket | null = null;
+  private connectionMode: ConnectionMode = 'spawn';
+  private attachModeRequested = false;
+  private attachModeFallbackReason: string | null = null;
+  private ownedThreads = new Set<string>();
   private nextId = 1;
   private pending = new Map<JsonRpcId, Pending>();
   private activeTurns = new Map<string, string>(); // threadId -> turnId
@@ -100,6 +118,23 @@ export class CodexProvider implements SessionProvider {
   private models = new Map<string, string>();
 
   constructor() {
+    if (!useMock()) {
+      this.attachModeRequested = useCodexAttachMode();
+      if (this.attachModeRequested) {
+        const socketPath = resolveCodexSocket();
+        if (socketPath && codexSocketExists(socketPath)) {
+          this.connectionMode = 'attach';
+        } else {
+          this.connectionMode = 'spawn';
+          this.attachModeFallbackReason =
+            `Attach mode requested but control socket not found at ${socketPath || defaultCodexSocketPath()}. ` +
+            `The ChatGPT desktop app does not use daemon mode. ` +
+            `To use attach mode, run: codex app-server daemon start`;
+          console.warn(`[wingman] ${this.attachModeFallbackReason}`);
+          console.warn('[wingman] Falling back to spawn mode (spawning own app-server).');
+        }
+      }
+    }
     if (useMock()) {
       // Seed a couple of mock sessions for easy pair demos.
       const a = this.seedMock({ cwd: process.cwd(), name: 'mock-demo', preview: 'Hello from mock Codex' });
@@ -108,6 +143,18 @@ export class CodexProvider implements SessionProvider {
         { role: 'assistant', text: 'Mock Codex ready. Set CODEX_MOCK=0 and install `codex` for real mode.', turnId: 'turn_mock_1' },
       );
     }
+  }
+
+  getConnectionMode(): ConnectionMode {
+    return this.connectionMode;
+  }
+
+  getAttachModeFallbackReason(): string | null {
+    return this.attachModeFallbackReason;
+  }
+
+  isThreadOwned(threadId: string): boolean {
+    return this.ownedThreads.has(threadId);
   }
 
   private seedMock(opts?: { cwd?: string; name?: string; preview?: string; tags?: string[] }): MockSession {
@@ -241,26 +288,50 @@ export class CodexProvider implements SessionProvider {
     }
 
     await this.ensureConnected();
-    // Prefer resume so history is available; fall back to thread/read with includeTurns.
+    // Read without taking ownership unless Wingman already resumed this thread.
     let thread: Record<string, unknown>;
-    try {
-      const resumed = (await this.request('thread/resume', { threadId: sessionId })) as {
-        thread?: Record<string, unknown>;
-      };
-      thread = resumed.thread ?? {};
-    } catch {
-      const read = (await this.request('thread/read', {
-        threadId: sessionId,
-        includeTurns: true,
-      })) as { thread?: Record<string, unknown> };
-      thread = read.thread ?? {};
+    if (!this.ownedThreads.has(sessionId)) {
+      try {
+        const read = (await this.request('thread/read', {
+          threadId: sessionId,
+          includeTurns: true,
+        })) as { thread?: Record<string, unknown> };
+        thread = read.thread ?? {};
+      } catch {
+        try {
+          const turnsResult = (await this.request('thread/turns/list', {
+            threadId: sessionId,
+            limit: Math.min(limit, 100),
+          })) as { data?: unknown[] };
+          thread = { turns: turnsResult.data ?? [] };
+        } catch {
+          const resumed = (await this.request('thread/resume', { threadId: sessionId })) as {
+            thread?: Record<string, unknown>;
+          };
+          thread = resumed.thread ?? {};
+          this.ownedThreads.add(sessionId);
+        }
+      }
+    } else {
+      try {
+        const resumed = (await this.request('thread/resume', { threadId: sessionId })) as {
+          thread?: Record<string, unknown>;
+        };
+        thread = resumed.thread ?? {};
+      } catch {
+        const read = (await this.request('thread/read', {
+          threadId: sessionId,
+          includeTurns: true,
+        })) as { thread?: Record<string, unknown> };
+        thread = read.thread ?? {};
+      }
     }
 
     const items = extractTranscriptItems(thread).slice(-Math.max(1, limit));
     return { sessionId, provider: 'codex', items };
   }
 
-  async sendMessage(sessionId: string, text: string): Promise<SendMessageResult> {
+  async sendMessage(sessionId: string, text: string, opts?: { force?: boolean }): Promise<SendMessageResult> {
     if (useMock()) {
       const s = this.mockSessions.get(sessionId);
       if (!s) throw new Error(`Unknown mock session: ${sessionId}`);
@@ -307,9 +378,23 @@ export class CodexProvider implements SessionProvider {
     }
 
     await this.ensureConnected();
-    // Ensure thread is loaded before turn/start.
+    if (!this.ownedThreads.has(sessionId) && !opts?.force) {
+      try {
+        const loadedResult = (await this.request('thread/loaded/list', {})) as { data?: string[] };
+        const loadedThreads = loadedResult.data ?? [];
+        if (loadedThreads.includes(sessionId)) {
+          console.warn(
+            `[wingman] Thread ${sessionId} is already loaded by another client. ` +
+              'Sending may conflict with that client. Pass force to send anyway.',
+          );
+        }
+      } catch {
+        /* thread/loaded/list is not on every app-server build */
+      }
+    }
     try {
       await this.request('thread/resume', { threadId: sessionId });
+      this.ownedThreads.add(sessionId);
     } catch {
       // Thread may already be loaded; continue.
     }
@@ -371,8 +456,9 @@ export class CodexProvider implements SessionProvider {
         tags: opts?.tags,
       });
       if (model) this.models.set(s.id, model);
+      this.ownedThreads.add(s.id);
       if (opts?.prompt) {
-        await this.sendMessage(s.id, opts.prompt);
+        await this.sendMessage(s.id, opts.prompt, { force: true });
       }
       return { sessionId: s.id, provider: 'codex', cwd: s.cwd, model };
     }
@@ -391,10 +477,11 @@ export class CodexProvider implements SessionProvider {
     };
     const sessionId = result.thread?.id;
     if (!sessionId) throw new Error('thread/start did not return thread.id');
+    this.ownedThreads.add(sessionId);
     if (model) this.models.set(sessionId, model);
 
     if (opts?.prompt) {
-      await this.sendMessage(sessionId, opts.prompt);
+      await this.sendMessage(sessionId, opts.prompt, { force: true });
     }
 
     return { sessionId, provider: 'codex', cwd: opts?.cwd, model };
@@ -649,13 +736,8 @@ export class CodexProvider implements SessionProvider {
     const pending = approvals[idx];
     approvals.splice(idx, 1);
 
-    // Send response to the JSON-RPC request
-    if (this.proc?.stdin.writable) {
-      const response = {
-        id: pending.requestId,
-        result: { decision },
-      };
-      this.proc.stdin.write(`${JSON.stringify(response)}\n`);
+    if (this.transportOpen()) {
+      this.writeMessage({ id: pending.requestId, result: { decision } });
     }
 
     return { sessionId, approvalId, resolved: true, decision };
@@ -695,22 +777,83 @@ export class CodexProvider implements SessionProvider {
   }
 
   async close(): Promise<void> {
+    const err = new Error('Codex app-server closed');
+    for (const [, p] of this.pending) p.reject(err);
+    this.pending.clear();
+    this.ownedThreads.clear();
     if (this.proc) {
-      for (const [, p] of this.pending) {
-        p.reject(new Error('Codex app-server closed'));
-      }
-      this.pending.clear();
       this.proc.kill();
       this.proc = null;
-      this.ready = null;
     }
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    this.ready = null;
   }
 
   private ensureConnected(): Promise<void> {
     if (useMock()) return Promise.resolve();
     if (this.ready) return this.ready;
-    this.ready = this.startProcess();
+    this.ready = this.connectionMode === 'attach' ? this.connectToSocket() : this.startProcess();
     return this.ready;
+  }
+
+  private async connectToSocket(): Promise<void> {
+    const socketPath = resolveCodexSocket();
+    if (!socketPath) {
+      throw new Error('WINGMAN_CODEX_SOCKET is not set, but attach mode was requested.');
+    }
+    if (!existsSync(socketPath)) {
+      throw new Error(
+        `Codex app-server control socket not found at ${socketPath}. ` +
+          'Start it with `codex app-server daemon start` or `codex app-server --listen unix://`, ' +
+          'then connect the TUI with `codex --remote unix://`. ' +
+          'Or unset WINGMAN_CODEX_SOCKET to spawn a private app-server.',
+      );
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws+unix://${socketPath}:/`, codexSocketClientOptions());
+      const timeoutMs = Number(process.env.CODEX_RPC_TIMEOUT_MS ?? 60_000);
+      const timeout = setTimeout(() => {
+        ws.close();
+        reject(new Error(`WebSocket connection timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      ws.on('open', () => {
+        clearTimeout(timeout);
+        this.ws = ws;
+        ws.on('message', (data: WebSocket.RawData) => {
+          this.onLine(data.toString());
+        });
+        ws.on('close', () => {
+          const closed = new Error('WebSocket connection closed');
+          for (const [, p] of this.pending) p.reject(closed);
+          this.pending.clear();
+          this.ws = null;
+          this.ready = null;
+        });
+        ws.on('error', (err: Error) => {
+          console.error('[codex socket]', err.message);
+        });
+        resolve();
+      });
+      ws.on('error', (err: Error) => {
+        clearTimeout(timeout);
+        reject(
+          new Error(
+            `Failed to connect to Codex app-server socket at ${socketPath}: ${err.message}`,
+          ),
+        );
+      });
+    });
+
+    await this.request('initialize', {
+      clientInfo: { name: 'wingman', title: 'Wingman', version: '0.1.0' },
+      capabilities: { experimentalApi: true },
+    });
+    this.notify('initialized', {});
   }
 
   private async startProcess(): Promise<void> {
@@ -884,14 +1027,26 @@ export class CodexProvider implements SessionProvider {
     }
   }
 
+  private transportOpen(): boolean {
+    if (this.connectionMode === 'attach') return this.ws?.readyState === WebSocket.OPEN;
+    return Boolean(this.proc?.stdin.writable);
+  }
+
+  private writeMessage(payload: unknown): void {
+    const message = JSON.stringify(payload);
+    if (this.connectionMode === 'attach' && this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(message);
+      return;
+    }
+    if (this.proc?.stdin.writable) this.proc.stdin.write(`${message}\n`);
+  }
+
   private request(method: string, params?: unknown): Promise<unknown> {
-    if (!this.proc?.stdin.writable) {
-      return Promise.reject(new Error('Codex app-server is not running'));
+    if (!this.transportOpen()) {
+      return Promise.reject(new Error('Codex app-server is not connected'));
     }
     const id = this.nextId++;
-    const payload = { method, id, params: params ?? {} };
-    // Wire format omits "jsonrpc":"2.0" per Codex docs.
-    this.proc.stdin.write(`${JSON.stringify(payload)}\n`);
+    this.writeMessage({ method, id, params: params ?? {} });
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       const timeoutMs = Number(process.env.CODEX_RPC_TIMEOUT_MS ?? 60_000);
@@ -905,8 +1060,8 @@ export class CodexProvider implements SessionProvider {
   }
 
   private notify(method: string, params?: unknown): void {
-    if (!this.proc?.stdin.writable) return;
-    this.proc.stdin.write(`${JSON.stringify({ method, params: params ?? {} })}\n`);
+    if (!this.transportOpen()) return;
+    this.writeMessage({ method, params: params ?? {} });
   }
 }
 

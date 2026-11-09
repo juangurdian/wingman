@@ -1,5 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { hostname } from 'node:os';
+import { codexSocketClientOptions } from '../src/providers/codex.js';
+
+describe('Codex socket client', () => {
+  it('disables permessage-deflate so the app-server accepts the handshake', () => {
+    expect(codexSocketClientOptions()).toEqual({ perMessageDeflate: false });
+  });
+
+  it('falls back to spawn when attach mode is set and the socket is missing', async () => {
+    vi.stubEnv('WINGMAN_CODEX_SOCKET', 'auto');
+    const { CodexProvider } = await import('../src/providers/codex.js');
+    const provider = new CodexProvider();
+    expect(provider.getConnectionMode()).toBe('spawn');
+    expect(provider.getAttachModeFallbackReason()).toMatch(/control socket not found/);
+    vi.unstubAllEnvs();
+  });
+});
 
 describe('CodexProvider mock mode - wait/steer/approvals', () => {
   beforeEach(() => {
