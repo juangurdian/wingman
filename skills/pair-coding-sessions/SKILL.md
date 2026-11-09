@@ -146,14 +146,35 @@ If you want Grok to control a session, create it through Wingman's `create_sessi
 - Approvals / sandbox still run under the user's agent settings
 - Do not scrape credentials or bypass auth to "fix" tunnel issues
 
+## When the bridge does not answer
+
+`get_bridge_status` only works while Wingman is up. If the call fails, classify it:
+
+- Cloudflare 1033 or HTTP 530: `tunnel_down` (cloudflared is not connected). The machine may be off, or only the tunnel stopped.
+- HTTP 502 or 504: `server_down`. The tunnel is up and Wingman is not listening.
+- `fetch failed`, DNS failure, or a timeout with no HTTP status: `host_offline`.
+- HTTP 401 or 403: Wingman is up and the bearer token was rejected.
+
+On the machine: `wingman-tunnel diagnose --url https://YOUR-TUNNEL-HOST`. See `docs/operations.md`.
+
+## Headless runs, status, and scope
+
+- `start_codex_exec` runs `codex exec` with `--sandbox` (not `--full-auto`). The prompt is written to stdin.
+- `run_headless` starts a long Claude turn. The prompt is an SDK string, so PowerShell 5 does not wrap it.
+- `get_run` polls status and tails output. `get_status` reports idle, working, awaiting approval, or errored, plus git HEAD and dirty files.
+- `stop` interrupts a session or kills a headless run and reports RSS. Shared Codex and Claude processes are not SIGKILLed.
+- `WINGMAN_ALLOWED_PATHS` (or `~/.wingman/allowlist.json`) limits which repos a caller can see. Windows paths are split on `;`.
+- `wingman-task install` registers a Windows scheduled task that restarts on crash and does not pass `--new-token`.
+
 ## Troubleshooting
 
-- **401/403** — wrong or missing `Authorization: Bearer …`
-- **Tunnel 502** — pair process not running or wrong port
-- **Codex spawn failed** — install Codex CLI or use `CODEX_MOCK=1`
-- **Claude SDK error** — check that `@anthropic-ai/claude-agent-sdk` installed correctly
-- **interrupt fails** — no tracked `turnId`; send a message first (Codex real mode)
-- **session not found** — use `list_sessions` to find Wingman-managed sessions
+- **401/403**: wrong or missing `Authorization: Bearer …`
+- **Tunnel 502**: pair process not running or wrong port (`server_down`)
+- **Cloudflare 1033**: tunnel process is down (`tunnel_down`), which is separate from a Wingman crash
+- **Codex spawn failed**: install Codex CLI or use `CODEX_MOCK=1`
+- **Claude SDK error**: check that `@anthropic-ai/claude-agent-sdk` installed correctly
+- **interrupt fails**: no tracked `turnId`; send a message first (Codex real mode)
+- **session not found**: use `list_sessions` to find Wingman-managed sessions. An allowlist also hides sessions outside its roots.
 
 ## Reference links
 

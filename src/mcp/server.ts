@@ -23,6 +23,11 @@ import {
   SetSessionMetaSchema,
   ExportTranscriptSchema,
   ExportFormatSchema,
+  GetStatusSchema,
+  StartCodexExecSchema,
+  RunHeadlessSchema,
+  GetRunSchema,
+  StopSchema,
 } from './tools.js';
 import { bearerAuth } from './auth.js';
 import { createProviders } from '../providers/index.js';
@@ -35,6 +40,7 @@ import {
   isHealthzAuthFree,
   type BridgeConfig,
 } from '../config.js';
+import { buildBridgeStatus, writeHeartbeat } from '../reachability.js';
 
 export interface StartServerOptions {
   host?: string;
@@ -62,7 +68,25 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
   }
 
   const providers = createProviders();
-  const handlers = createToolHandlers(providers);
+  const startedAtMs = Date.now();
+  const bridgeStatus = () =>
+    buildBridgeStatus({
+      pid: process.pid,
+      startedAtMs,
+      port,
+      now: Date.now(),
+    });
+  const handlers = createToolHandlers(providers, { bridgeStatus });
+  const beat = () => {
+    try {
+      writeHeartbeat({ pid: process.pid, port, startedAt: new Date(startedAtMs).toISOString() });
+    } catch (err) {
+      console.error('[wingman] heartbeat write failed:', err instanceof Error ? err.message : err);
+    }
+  };
+  beat();
+  const heartbeatTimer = setInterval(beat, 15_000);
+  if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
 
   // createMcpExpressApp's `host` only controls DNS-rebinding Host checks.
   // Keep listen() on loopback (`host` below), but pass 0.0.0.0 here so
@@ -72,14 +96,15 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
   // Health endpoint - auth requirement is configurable via WINGMAN_HEALTHZ_AUTH_FREE
   // Default: requires auth. Set WINGMAN_HEALTHZ_AUTH_FREE=1 for monitors/tunnels that need auth-free access.
   const healthzAuthFree = isHealthzAuthFree();
+  const sendStatus = (_req: unknown, res: { status: (code: number) => { json: (body: unknown) => void } }) => {
+    res.status(200).json(bridgeStatus());
+  };
   if (healthzAuthFree) {
-    app.get('/healthz', (_req, res) => {
-      res.status(200).json({ ok: true, service: 'wingman' });
-    });
+    app.get('/healthz', sendStatus);
+    app.get('/status', sendStatus);
   } else {
-    app.get('/healthz', bearerAuth(token), (_req, res) => {
-      res.status(200).json({ ok: true, service: 'wingman' });
-    });
+    app.get('/healthz', bearerAuth(token), sendStatus);
+    app.get('/status', bearerAuth(token), sendStatus);
   }
 
   app.use('/mcp', bearerAuth(token));
@@ -231,6 +256,75 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
     );
 
     server.registerTool(
+      'get_bridge_status',
+      {
+        description:
+          'Report that this Wingman process is up (pid, uptime, and how to read a later failure). ' +
+          'If the call itself fails: Cloudflare 1033 or HTTP 530 means tunnel_down (cloudflared is not connected). ' +
+          'HTTP 502 or 504 means server_down (the tunnel is up and Wingman is not listening). ' +
+          'fetch failed, ENOTFOUND, or a timeout with no HTTP status means host_offline. ' +
+          'HTTP 401 or 403 means the server is up and the bearer token was rejected. ' +
+          'This tool cannot answer after the process exits. On the machine, run wingman-tunnel diagnose.',
+        inputSchema: {},
+      },
+      async () => handlers.get_bridge_status(),
+    );
+
+    server.registerTool(
+      'get_status',
+      {
+        description:
+          'Per session: idle, working, awaiting_approval, or errored, plus last activity, pending prompt, model, git HEAD, dirty files, and process RSS.',
+        inputSchema: GetStatusSchema.shape,
+      },
+      async (args) => handlers.get_status(GetStatusSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'start_codex_exec',
+      {
+        description:
+          'Start or resume a headless `codex exec` run (CLI 0.166 flags: --cd, --sandbox, --model, --json). ' +
+          'Does not pass --full-auto. The prompt is written to stdin so multi-line text is safe on Windows. ' +
+          'Returns a run id. Poll with get_run.',
+        inputSchema: StartCodexExecSchema.shape,
+      },
+      async (args) => handlers.start_codex_exec(StartCodexExecSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'run_headless',
+      {
+        description:
+          'Start a long Claude run. The prompt is passed as text to the Agent SDK (not through PowerShell). ' +
+          'Accepts max_turns and permission_mode. Returns a run id. Poll with get_run.',
+        inputSchema: RunHeadlessSchema.shape,
+      },
+      async (args) => handlers.run_headless(RunHeadlessSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'get_run',
+      {
+        description: 'Poll a headless Codex exec or Claude run. Returns status, exit code, output tail, and RSS.',
+        inputSchema: GetRunSchema.shape,
+      },
+      async (args) => handlers.get_run(GetRunSchema.parse(args)),
+    );
+
+    server.registerTool(
+      'stop',
+      {
+        description:
+          'Stop a session turn or kill a headless run. Pass session_id (with provider) or run_id. ' +
+          'force SIGKILLs a codex exec process. Shared Codex and Claude processes are interrupted, not killed. ' +
+          'Includes memory use when a pid is known.',
+        inputSchema: StopSchema.shape,
+      },
+      async (args) => handlers.stop(StopSchema.parse(args)),
+    );
+
+    server.registerTool(
       'export_transcript',
       {
         description:
@@ -313,6 +407,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
     token,
     url,
     close: async () => {
+      clearInterval(heartbeatTimer);
       const httpServer = (app as unknown as { __httpServer?: { close: (cb: (err?: Error) => void) => void } })
         .__httpServer;
       if (httpServer) {

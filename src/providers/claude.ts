@@ -106,6 +106,8 @@ interface ActiveTurn {
   /** Session id the turn is writing. Differs from the request when the turn forks. */
   actualSessionId?: string;
   startedAt: number;
+  /** Prompt text for this turn. Kept off the shell command line. */
+  prompt?: string;
   abortController?: AbortController;
   stream?: ClaudePromptStream;
   query?: ClaudeQueryLike;
@@ -199,6 +201,7 @@ export class ClaudeProvider implements SessionProvider {
   private activeTurns = new Map<string, ActiveTurn>();
   private permissions = new ClaudePermissionBroker();
   private outcomes = new Map<string, TurnOutcome>();
+  private prompts = new Map<string, string>();
 
   constructor() {
     if (useMock()) {
@@ -407,6 +410,22 @@ export class ClaudeProvider implements SessionProvider {
     };
   }
 
+  activity(sessionId: string): import('./types.js').SessionActivity {
+    const active = this.activeTurns.get(sessionId);
+    const approvals = this.permissions.list(sessionId);
+    const outcome = this.outcomes.get(sessionId);
+    return {
+      running: Boolean(active),
+      approvalCount: approvals.length,
+      error: !active && outcome?.status === 'failed' ? outcome.error ?? 'turn failed' : undefined,
+      prompt: active?.prompt ?? this.prompts.get(sessionId),
+      model: active?.plan?.model ?? outcome?.model ?? this.knownModel(sessionId),
+      lastActivityAt: active?.startedAt,
+      pid: process.pid,
+      sharedProcess: true,
+    };
+  }
+
   private knownModel(sessionId: string): string | undefined {
     if (useMock()) {
       return (this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId))?.model;
@@ -537,9 +556,12 @@ export class ClaudeProvider implements SessionProvider {
       sessionId: target.id,
       actualSessionId: target.id,
       startedAt: Date.now(),
+      prompt: text,
       abortController,
       plan,
     };
+    this.prompts.set(sessionId, text);
+    this.prompts.set(target.id, text);
     this.activeTurns.set(sessionId, activeTurn);
     if (target.id !== sessionId) this.activeTurns.set(target.id, activeTurn);
     target.activeTurnId = turnId;
@@ -652,10 +674,12 @@ export class ClaudeProvider implements SessionProvider {
       sessionId,
       actualSessionId: sessionId,
       startedAt: Date.now(),
+      prompt: text,
       abortController,
       stream,
       plan,
     };
+    this.prompts.set(sessionId, text);
     this.activeTurns.set(sessionId, activeTurn);
 
     void this.runQuery({
