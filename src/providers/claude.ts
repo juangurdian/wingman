@@ -50,7 +50,14 @@ import {
   resolveHostName,
   splitPathList,
 } from '../config.js';
+import {
+  listClaudeLiveSessions,
+  sendToClaudeSession as sendToClaudeInbox,
+  type ClaudeLiveSession,
+} from '../claude-inbox.js';
 import { ClaudePermissionBroker } from './claude-permissions.js';
+
+const TURN_ALREADY_ACTIVE = 'turn already active; use steer or interrupt';
 import {
   buildClaudeQueryOptions,
   ClaudePromptStream,
@@ -289,10 +296,11 @@ export class ClaudeProvider implements SessionProvider {
     return s;
   }
 
-  async listSessions(): Promise<SessionSummary[]> {
+  async listSessions(opts?: { state?: 'live' | 'past' | 'all' }): Promise<SessionSummary[]> {
     const hostId = resolveHostId();
     const hostName = resolveHostName();
-    
+    const stateFilter = opts?.state ?? 'all';
+
     if (useMock()) {
       const wingmanSessions: SessionSummary[] = [...this.mockSessions.values()].map((s) => ({
         id: s.id,
@@ -307,10 +315,11 @@ export class ClaudeProvider implements SessionProvider {
         tags: s.tags,
         hostId,
         hostName,
+        live: true,
       }));
 
       if (!discoveryEnabled()) {
-        return wingmanSessions;
+        return this.sortAndFilterByState(wingmanSessions, stateFilter);
       }
 
       const discovered: SessionSummary[] = [...this.mockDiscovered.values()].map((s) => ({
@@ -328,52 +337,118 @@ export class ClaudeProvider implements SessionProvider {
         tags: s.tags ?? (s.tag ? [s.tag] : undefined),
         hostId,
         hostName,
+        live: false,
       }));
 
       const wingmanIds = new Set(wingmanSessions.map((s) => s.id));
       const merged = [...wingmanSessions];
       for (const ds of discovered) {
-        if (!wingmanIds.has(ds.id)) {
-          merged.push(ds);
-        }
+        if (!wingmanIds.has(ds.id)) merged.push(ds);
       }
-
-      merged.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-      return merged;
+      return this.sortAndFilterByState(merged, stateFilter);
     }
 
-    const registry = loadRegistry();
-    const wingmanSessions: SessionSummary[] = registry.sessions.map((reg) => ({
-      id: reg.sessionId,
-      provider: 'claude' as const,
-      cwd: reg.cwd,
-      name: reg.name,
-      preview: reg.preview,
-      status: this.activeTurns.has(reg.sessionId) ? 'running' : 'idle',
-      createdAt: reg.createdAt,
-      updatedAt: reg.updatedAt,
-      source: 'wingman' as const,
-      tags: reg.tags,
-      hostId,
-      hostName,
-    }));
+    let liveSessions: ClaudeLiveSession[] = [];
+    try {
+      liveSessions = await listClaudeLiveSessions();
+    } catch {
+      liveSessions = [];
+    }
+    const liveSessionMap = new Map(liveSessions.map((ls) => [ls.sessionId, ls]));
 
+    const registry = loadRegistry();
+    const wingmanSessions: SessionSummary[] = registry.sessions.map((reg) => {
+      const liveInfo = liveSessionMap.get(reg.sessionId);
+      return {
+        id: reg.sessionId,
+        provider: 'claude' as const,
+        cwd: liveInfo?.cwd ?? reg.cwd,
+        name: liveInfo?.name ?? reg.name,
+        preview: reg.preview,
+        status: this.activeTurns.has(reg.sessionId) ? 'running' : 'idle',
+        createdAt: reg.createdAt,
+        updatedAt: liveInfo?.updatedAt ?? reg.updatedAt,
+        source: 'wingman' as const,
+        tags: reg.tags,
+        hostId,
+        hostName,
+        model: reg.model,
+        live: liveInfo?.live ?? false,
+        pid: liveInfo?.pid,
+        liveStatus: liveInfo?.status ?? liveInfo?.state,
+        kind: liveInfo?.kind,
+      };
+    });
+
+    const wingmanIds = new Set(wingmanSessions.map((s) => s.id));
     if (!discoveryEnabled()) {
-      return wingmanSessions;
+      for (const ls of liveSessions) {
+        if (!wingmanIds.has(ls.sessionId)) {
+          wingmanSessions.push(this.liveSessionToSummary(ls, hostId, hostName));
+        }
+      }
+      return this.sortAndFilterByState(wingmanSessions, stateFilter);
     }
 
     const discovered = await this.discoverViaSdk();
-
-    const wingmanIds = new Set(wingmanSessions.map((s) => s.id));
     const merged = [...wingmanSessions];
     for (const ds of discovered) {
-      if (!wingmanIds.has(ds.id)) {
-        merged.push({ ...ds, hostId, hostName });
+      if (wingmanIds.has(ds.id)) continue;
+      const liveInfo = liveSessionMap.get(ds.id);
+      merged.push({
+        ...ds,
+        hostId,
+        hostName,
+        live: liveInfo?.live ?? false,
+        pid: liveInfo?.pid,
+        liveStatus: liveInfo?.status ?? liveInfo?.state,
+        kind: liveInfo?.kind,
+      });
+      wingmanIds.add(ds.id);
+    }
+    for (const ls of liveSessions) {
+      if (!wingmanIds.has(ls.sessionId)) {
+        merged.push(this.liveSessionToSummary(ls, hostId, hostName));
       }
     }
+    return this.sortAndFilterByState(merged, stateFilter);
+  }
 
-    merged.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-    return merged;
+  private liveSessionToSummary(
+    ls: ClaudeLiveSession,
+    hostId: string | undefined,
+    hostName: string | undefined,
+  ): SessionSummary {
+    return {
+      id: ls.sessionId,
+      provider: 'claude',
+      cwd: ls.cwd,
+      name: ls.name,
+      status: this.activeTurns.has(ls.sessionId) ? 'running' : 'idle',
+      updatedAt: ls.updatedAt,
+      source: 'discovered',
+      hostId,
+      hostName,
+      live: ls.live ?? false,
+      pid: ls.pid,
+      liveStatus: ls.status ?? ls.state,
+      kind: ls.kind,
+    };
+  }
+
+  private sortAndFilterByState(
+    sessions: SessionSummary[],
+    stateFilter: 'live' | 'past' | 'all',
+  ): SessionSummary[] {
+    let filtered = sessions;
+    if (stateFilter === 'live') filtered = sessions.filter((s) => s.live === true);
+    else if (stateFilter === 'past') filtered = sessions.filter((s) => s.live !== true);
+    filtered.sort((a, b) => {
+      if (a.live && !b.live) return -1;
+      if (!a.live && b.live) return 1;
+      return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+    });
+    return filtered;
   }
 
   async getSession(sessionId: string): Promise<SessionDetail | null> {
@@ -521,11 +596,42 @@ export class ClaudeProvider implements SessionProvider {
     opts?: SendMessageOptions,
   ): Promise<SendMessageResult> {
     const binding = opts?.binding ?? 'resume';
+    if (this.activeTurns.has(sessionId)) {
+      throw new Error(TURN_ALREADY_ACTIVE);
+    }
     if (useMock()) {
       return this.sendMessageMock(sessionId, text, binding, opts);
     }
+    if (binding !== 'new') {
+      const delivered = await this.tryInboxDelivery(sessionId, text);
+      if (delivered) return delivered;
+    }
     const cwd = loadRegistry().sessions.find((s) => s.sessionId === sessionId)?.cwd;
     return this.beginRealTurn(sessionId, text, cwd, binding, opts);
+  }
+
+  /** Deliver into a running interactive Claude process. Does not start a second headless query. */
+  private async tryInboxDelivery(sessionId: string, text: string): Promise<SendMessageResult | undefined> {
+    try {
+      const liveSessions = await listClaudeLiveSessions();
+      const liveSession = liveSessions.find((s) => s.sessionId === sessionId);
+      if (!liveSession?.live || !liveSession.messagingSocketPath) return undefined;
+      const inboxResult = await sendToClaudeInbox(sessionId, text);
+      if (inboxResult.delivered) {
+        return {
+          sessionId,
+          status: 'delivered_via_inbox',
+          attachedToTerminal: true,
+          note: 'Delivered on the interactive session inbox. This did not start a headless resume.',
+        };
+      }
+      console.warn(
+        `[claude] Inbox delivery failed for live session ${sessionId}: ${inboxResult.error ?? 'not delivered'}. Falling back to a headless resume.`,
+      );
+    } catch (err) {
+      console.warn(`[claude] Live session check failed: ${err instanceof Error ? err.message : err}`);
+    }
+    return undefined;
   }
 
   private sendMessageMock(
@@ -536,6 +642,9 @@ export class ClaudeProvider implements SessionProvider {
   ): SendMessageResult {
     const requested = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
     if (!requested) throw new Error(`Unknown mock session: ${sessionId}`);
+    if (this.activeTurns.has(sessionId) || this.activeTurns.has(requested.id)) {
+      throw new Error(TURN_ALREADY_ACTIVE);
+    }
 
     const plan = buildClaudeQueryOptions({
       binding,
@@ -631,10 +740,8 @@ export class ClaudeProvider implements SessionProvider {
       target.updatedAt = Date.now();
       if (target.activeTurnId === turnId) target.activeTurnId = undefined;
       const outcome = this.makeOutcome(requestedSessionId, target.id, turnId, plan, status, latestMessage);
-      this.outcomes.set(requestedSessionId, outcome);
-      if (target.id !== requestedSessionId) this.outcomes.set(target.id, outcome);
-      this.activeTurns.delete(requestedSessionId);
-      if (target.id !== requestedSessionId) this.activeTurns.delete(target.id);
+      this.settleTurn(requestedSessionId, turnId, outcome);
+      if (target.id !== requestedSessionId) this.settleTurn(target.id, turnId, outcome);
     }
   }
 
@@ -658,6 +765,9 @@ export class ClaudeProvider implements SessionProvider {
     binding: 'new' | 'resume',
     opts?: SendMessageOptions,
   ): SendMessageResult {
+    if (this.activeTurns.has(sessionId)) {
+      throw new Error(TURN_ALREADY_ACTIVE);
+    }
     const plan = buildClaudeQueryOptions({
       binding,
       sessionId,
@@ -797,7 +907,7 @@ export class ClaudeProvider implements SessionProvider {
       } catch {
         /* query already closed */
       }
-      this.permissions.cancelSession(sessionId);
+      this.permissions.cancelSession(sessionId, 'Turn ended before approval.', activeTurn.turnId);
       if (activeTurn.abortController?.signal.aborted) outcomeStatus = 'interrupted';
 
       const model = observedModel ?? plan.model;
@@ -813,13 +923,23 @@ export class ClaudeProvider implements SessionProvider {
         error,
         model,
       );
-      this.outcomes.set(sessionId, outcome);
-      if (actualSessionId !== sessionId) this.outcomes.set(actualSessionId, outcome);
-
-      await this.persistTurn(sessionId, actualSessionId, cwd, text, model);
-      this.activeTurns.delete(sessionId);
-      if (actualSessionId !== sessionId) this.activeTurns.delete(actualSessionId);
+      const stillOwns = this.settleTurn(sessionId, activeTurn.turnId, outcome);
+      if (actualSessionId !== sessionId) this.settleTurn(actualSessionId, activeTurn.turnId, outcome);
+      if (stillOwns) await this.persistTurn(sessionId, actualSessionId, cwd, text, model);
     }
+  }
+
+  /**
+   * Publish a turn outcome only while this turn still owns the slot.
+   * A newer turn keeps its entry and its approvals. An interrupted turn with
+   * no replacement still records its outcome.
+   */
+  private settleTurn(sessionId: string, turnId: string, outcome: TurnOutcome): boolean {
+    const current = this.activeTurns.get(sessionId);
+    if (current && current.turnId !== turnId) return false;
+    this.outcomes.set(sessionId, outcome);
+    if (current?.turnId === turnId) this.activeTurns.delete(sessionId);
+    return true;
   }
 
   private async lookupSessionModel(sessionId: string, cwd?: string): Promise<string | undefined> {
@@ -951,7 +1071,7 @@ export class ClaudeProvider implements SessionProvider {
       if (activeTurn) {
         activeTurn.abortController?.abort();
         activeTurn.stream?.finish();
-        this.permissions.cancelSession(sessionId);
+        this.permissions.cancelSession(sessionId, 'Turn interrupted before approval.', activeTurn.turnId);
         this.activeTurns.delete(sessionId);
         if (activeTurn.sessionId !== sessionId) this.activeTurns.delete(activeTurn.sessionId);
       }
@@ -971,7 +1091,7 @@ export class ClaudeProvider implements SessionProvider {
 
     activeTurn.abortController?.abort();
     activeTurn.stream?.finish();
-    this.permissions.cancelSession(sessionId);
+    this.permissions.cancelSession(sessionId, 'Turn interrupted before approval.', activeTurn.turnId);
     try {
       await activeTurn.query?.interrupt();
     } catch {

@@ -7,7 +7,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
-import { z } from 'zod';
 import {
   createToolHandlers,
   ListSessionsSchema,
@@ -22,12 +21,14 @@ import {
   ResolveApprovalSchema,
   SetSessionMetaSchema,
   ExportTranscriptSchema,
-  ExportFormatSchema,
   GetStatusSchema,
   StartCodexExecSchema,
   RunHeadlessSchema,
   GetRunSchema,
   StopSchema,
+  GetBridgeStatusSchema,
+  ListClaudeLiveSessionsSchema,
+  SendToClaudeSessionSchema,
 } from './tools.js';
 import { bearerAuth } from './auth.js';
 import { createProviders } from '../providers/index.js';
@@ -119,10 +120,10 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'list_sessions',
       {
         description:
-          'List coding-agent sessions. Optional provider filter: codex | claude.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']).optional(),
-        },
+          'List coding-agent sessions. Optional provider filter: codex | claude. ' +
+          'Optional state: live, past, or all. live means a Claude registry pid is still running. ' +
+          'Sessions are sorted with live ones first.',
+        inputSchema: ListSessionsSchema.shape,
       },
       async (args) => handlers.list_sessions(ListSessionsSchema.parse(args)),
     );
@@ -131,11 +132,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'read_transcript',
       {
         description: 'Read recent transcript messages for a session.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-          limit: z.number().int().positive().max(500).optional(),
-        },
+        inputSchema: ReadTranscriptSchema.shape,
       },
       async (args) => handlers.read_transcript(ReadTranscriptSchema.parse(args)),
     );
@@ -147,7 +144,9 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
           'Send a user message into an existing session. Codex starts a turn. ' +
           'Claude resumes that session id in a headless query (fork_session true copies it instead) ' +
           'with a configurable turn budget, permission mode, tool allow and deny lists, and model. ' +
-          'Omit model to inherit the Claude session model. A headless Claude turn is not shown in an already-open interactive terminal.',
+          'Omit model to inherit the Claude session model. A live interactive session is delivered on its inbox instead of a headless resume. ' +
+          'A second send_message while a Wingman turn is active is rejected; use steer or interrupt. ' +
+          'A headless Claude turn is not shown in an already-open interactive terminal.',
         inputSchema: SendMessageSchema.shape,
       },
       async (args) => handlers.send_message(SendMessageSchema.parse(args)),
@@ -157,10 +156,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'interrupt',
       {
         description: 'Interrupt an in-flight turn/session.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-        },
+        inputSchema: InterruptSchema.shape,
       },
       async (args) => handlers.interrupt(InterruptSchema.parse(args)),
     );
@@ -182,10 +178,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       {
         description:
           'Get detailed session info including status (idle/running), active turn ID, and timestamps.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-        },
+        inputSchema: GetSessionSchema.shape,
       },
       async (args) => handlers.get_session(GetSessionSchema.parse(args)),
     );
@@ -245,12 +238,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       {
         description:
           'Set session metadata (name, tags) for easier discovery. Works for Wingman-owned sessions.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-          name: z.string().optional(),
-          tags: z.array(z.string()).optional(),
-        },
+        inputSchema: SetSessionMetaSchema.shape,
       },
       async (args) => handlers.set_session_meta(SetSessionMetaSchema.parse(args)),
     );
@@ -265,7 +253,7 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
           'fetch failed, ENOTFOUND, or a timeout with no HTTP status means host_offline. ' +
           'HTTP 401 or 403 means the server is up and the bearer token was rejected. ' +
           'This tool cannot answer after the process exits. On the machine, run wingman-tunnel diagnose.',
-        inputSchema: {},
+        inputSchema: GetBridgeStatusSchema.shape,
       },
       async () => handlers.get_bridge_status(),
     );
@@ -325,16 +313,34 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
     );
 
     server.registerTool(
+      'list_claude_live_sessions',
+      {
+        description:
+          'List interactive Claude Code sessions from the cross-session inbox registry and `claude agents`. ' +
+          'live is true only when the registry pid is still running. Blocked background jobs without a live pid are past.',
+        inputSchema: ListClaudeLiveSessionsSchema.shape,
+      },
+      async () => handlers.list_claude_live_sessions(),
+    );
+
+    server.registerTool(
+      'send_to_claude_session',
+      {
+        description:
+          'Send text to a live interactive Claude Code session by session id, name, or pid. ' +
+          'Uses the per-session socket or Windows named pipe and the peer token. ' +
+          'Refuses past sessions. A headless send_message is the path for those.',
+        inputSchema: SendToClaudeSessionSchema.shape,
+      },
+      async (args) => handlers.send_to_claude_session(SendToClaudeSessionSchema.parse(args)),
+    );
+
+    server.registerTool(
       'export_transcript',
       {
         description:
           'Export a session transcript as Markdown or JSON. Returns content inline and writes to ~/.wingman/exports/.',
-        inputSchema: {
-          provider: z.enum(['codex', 'claude']),
-          session_id: z.string(),
-          format: ExportFormatSchema,
-          limit: z.number().int().positive().max(500).optional(),
-        },
+        inputSchema: ExportTranscriptSchema.shape,
       },
       async (args) => handlers.export_transcript(ExportTranscriptSchema.parse(args)),
     );

@@ -149,10 +149,10 @@ flowchart LR
 
 | Tool | Args | Notes |
 |------|------|--------|
-| `list_sessions` | `provider?`: `codex` \| `claude` | Lists sessions for one or both providers (includes `status`, `source`, `tags`, `hostId`, `hostName`) |
+| `list_sessions` | `provider?`: `codex` \| `claude`, `state?`: `live` \| `past` \| `all` | Lists sessions. `state` is Claude inbox liveness (a running registry pid). Live sessions sort first. |
 | `get_session` | `provider`, `session_id` | Get detailed session info including status (`idle` / `running`), tags, and host identity |
 | `read_transcript` | `provider`, `session_id`, `limit?` | Recent messages (newest at end) |
-| `send_message` | `provider`, `session_id`, `text`, `model?`, `max_turns?`, `permission_mode?`, `allowed_tools?`, `disallowed_tools?`, `fork_session?`, `approval_timeout_ms?` | Codex: `turn/start`. Claude: headless resume of the same session id (or a fork), returns `accepted` quickly. Omit `model` to inherit the session model. |
+| `send_message` | `provider`, `session_id`, `text`, `model?`, `max_turns?`, `permission_mode?`, `allowed_tools?`, `disallowed_tools?`, `fork_session?`, `approval_timeout_ms?`, `force?` | Codex: `turn/start` (warns if another client has the thread loaded unless `force`). Claude live sessions are delivered on the inbox. Otherwise a headless resume. A second send during an active Wingman turn is rejected. |
 | `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`. Claude: aborts the Wingman-owned headless query (`AbortController` and `Query.interrupt()`). |
 | `create_session` | `provider`, `cwd?`, `prompt?`, `name?`, `tags?`, `model?`, `max_turns?`, `permission_mode?`, `allowed_tools?`, `disallowed_tools?`, `approval_timeout_ms?` | Codex: `thread/start` with optional model override. Claude: new headless session. Model is optional for both. |
 | `wait_turn` | `provider`, `session_id`, `timeout_ms?`, `poll_interval_ms?` | Wait for a Codex or Claude turn to complete, fail, or time out. Returns early while a permission prompt is waiting. |
@@ -162,6 +162,8 @@ flowchart LR
 | `set_session_meta` | `provider`, `session_id`, `name?`, `tags?` | Set session name/tags for easier discovery (Wingman-owned sessions) |
 | `export_transcript` | `provider`, `session_id`, `format`, `limit?` | Export transcript as `markdown` \| `json`; returns content + writes to `~/.wingman/exports/` |
 | `get_bridge_status` | (none) | This process is up: pid, uptime, and how to read a later failure. See [Operations](docs/operations.md). |
+| `list_claude_live_sessions` | (none) | Interactive Claude sessions from the inbox registry and `claude agents`. `live` is true only while the pid is running. |
+| `send_to_claude_session` | `target`, `text` | Send text to a live interactive session by id, name, or pid. Past sessions are refused. |
 | `get_status` | `provider`, `session_id`, `caller?` | `idle`, `working`, `awaiting_approval`, or `errored`, plus last activity, pending prompt, model, git HEAD, dirty files, and RSS |
 | `start_codex_exec` | `prompt`, `cwd`, `sandbox?`, `model?`, `resume_session_id?` | Headless `codex exec` (CLI 0.166). No `--full-auto`. Prompt goes to stdin. Returns a run id. |
 | `run_headless` | `prompt`, `cwd?`, `session_id?`, `max_turns?`, `permission_mode?`, `model?` | Long Claude run. Prompt is an SDK string, not a PowerShell command. Returns a run id. |
@@ -199,7 +201,11 @@ npm run pair
 
 ### send_message behavior
 
-For **Claude sessions**, `send_message` returns immediately with `{ status: "accepted", turnId, resumeMode, maxTurns, permissionMode, model?, modelSource, attachedToTerminal: false, note }` while the SDK query runs in the background. Use `wait_turn`, `get_session`, or `read_transcript` to observe progress. This keeps the MCP HTTP call from waiting on the model.
+For a **live interactive Claude session** (registry file plus a running pid), `send_message` delivers the text on that session's inbox socket or Windows named pipe and returns `{ status: "delivered_via_inbox", attachedToTerminal: true }`. It does not start a headless resume. If the inbox rejects the message, Wingman falls back to the headless path below.
+
+For **other Claude sessions**, `send_message` returns immediately with `{ status: "accepted", turnId, resumeMode, maxTurns, permissionMode, model?, modelSource, attachedToTerminal: false, note }` while the SDK query runs in the background. Use `wait_turn`, `get_session`, or `read_transcript` to observe progress. This keeps the MCP HTTP call from waiting on the model.
+
+If a Wingman turn is already active, `send_message` throws `turn already active; use steer or interrupt` and does not replace that turn. Approval timeout values, including `WINGMAN_CLAUDE_APPROVAL_TIMEOUT_MS`, are capped at 600000 ms so a huge timer cannot collapse to 1 ms.
 
 Per-call fields override the `WINGMAN_CLAUDE_*` defaults below. `max_turns` defaults to 50 (not 1). `permission_mode` defaults to `default`, and Wingman sets `permissionPrompts: "host"` so tool prompts reach `list_approvals` instead of being auto-denied.
 
@@ -224,7 +230,11 @@ For **Codex sessions**, `send_message` blocks until `turn/start` returns (typica
 | `fork` | A new session id is copied from the original. The original is left unchanged. `actualSessionId` is the copy (immediately in mock mode, and on `wait_turn` / `get_session` once the CLI reports it in real mode). |
 | `new` | `create_session` started a new id. |
 
-`attachedToTerminal` is always `false` for these calls. A headless Agent SDK query does not attach to an already-open interactive Claude Code terminal, so the turn will not appear there. That limit is in the CLI: Wingman can read and resume the session file, and it cannot type into a TUI that already holds the session. If that terminal has the transcript open, the CLI may still fork a new id even when `fork_session` is false. Check `actualSessionId` on `get_session` and `wait_turn`. To watch relayed turns, read them with `read_transcript`, or reopen the session id in Claude Code after the turn finishes.
+`attachedToTerminal` is `true` only for inbox delivery. A headless Agent SDK query does not attach to an already-open interactive Claude Code terminal, so that turn will not appear there. That limit is in the CLI: Wingman can read and resume the session file, and it cannot type into a TUI that already holds the session unless the inbox socket is bound. `--bare` sessions do not bind an inbox. If that terminal has the transcript open, the CLI may still fork a new id even when `fork_session` is false. Check `actualSessionId` on `get_session` and `wait_turn`. To watch relayed turns, read them with `read_transcript`, or reopen the session id in Claude Code after the turn finishes.
+
+`list_claude_live_sessions` and `send_to_claude_session` talk to that inbox directly. `get_status` still reports `idle`, `working`, `awaiting_approval`, or `errored`, and also includes `live`, `processPid`, and `liveStatus` when the session record has them. See [Live session injection](docs/live-session-injection.md).
+
+Codex can attach to a shared app-server socket (`WINGMAN_CODEX_SOCKET=auto` or a path) instead of spawning its own process. The WebSocket client disables permessage-deflate. If the socket is missing, Wingman spawns a private app-server and logs the reason. `wingman-live-setup` prints the daemon and TUI steps. See [Codex shared server](docs/codex-shared-server.md).
 
 ### interrupt behavior
 

@@ -10,6 +10,7 @@ import { HeadlessRuns } from '../headless-runs.js';
 import { deriveSessionState, memoryNote } from '../session-status.js';
 import { readRssBytes } from '../process-rss.js';
 import { buildBridgeStatus, type BridgeStatus } from '../reachability.js';
+import { listClaudeLiveSessions, sendToClaudeSession } from '../claude-inbox.js';
 
 export const ProviderSchema = z.enum(['codex', 'claude', 'muse']);
 export const ExportFormatSchema = z.enum(['markdown', 'json']);
@@ -22,8 +23,13 @@ const callerField = {
     .describe('Allowlist caller id. Defaults to WINGMAN_CALLER or "default".'),
 };
 
+export const SessionStateFilterSchema = z.enum(['live', 'past', 'all']);
+
 export const ListSessionsSchema = z.object({
   provider: ProviderSchema.optional(),
+  state: SessionStateFilterSchema.optional().describe(
+    'Claude interactive liveness. live = registry pid is running. past = not live. Default all. Codex sessions are not marked live.',
+  ),
   ...callerField,
 });
 
@@ -85,6 +91,10 @@ export const SendMessageSchema = z.object({
     .boolean()
     .optional()
     .describe('Claude: true copies the session onto a new id. Default false resumes the same id.'),
+  force: z
+    .boolean()
+    .optional()
+    .describe('Codex: send even when another client already has the thread loaded.'),
   ...claudeTurnFields,
   ...callerField,
 });
@@ -202,6 +212,16 @@ export const GetRunSchema = z.object({
   ...callerField,
 });
 
+export const GetBridgeStatusSchema = z.object({});
+
+export const ListClaudeLiveSessionsSchema = z.object({});
+
+export const SendToClaudeSessionSchema = z.object({
+  target: z.string().min(1).describe('Interactive Claude session id, name, or pid.'),
+  text: z.string().min(1).describe('Message text. Delivered on the session inbox, not via PowerShell.'),
+  ...callerField,
+});
+
 export const StopSchema = z.object({
   provider: ProviderSchema.optional(),
   session_id: z.string().min(1).optional(),
@@ -283,7 +303,10 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
         const sessions: SessionSummary[] = [];
         for (const name of names) {
           try {
-            const list = await providers.get(name).listSessions();
+            const provider = providers.get(name);
+            const list = await provider.listSessions(
+              name === 'claude' ? { state: args.state ?? 'all' } : undefined,
+            );
             sessions.push(...list);
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
@@ -319,7 +342,14 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
             }
           }
         }
-        return textResult({ sessions: visibleSessions(sessions, args.caller) });
+        let visible = visibleSessions(sessions, args.caller);
+        const state = args.state ?? 'all';
+        if (state === 'live') {
+          visible = visible.filter((session) => session.live === true);
+        } else if (state === 'past') {
+          visible = visible.filter((session) => session.status !== 'not_enabled' && session.live !== true);
+        }
+        return textResult({ sessions: visible });
       } catch (err) {
         return errorResult(err);
       }
@@ -348,6 +378,7 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
           model: args.model,
           forkSession: args.fork_session,
           approvalTimeoutMs: args.approval_timeout_ms,
+          force: args.force,
         });
         return textResult(result);
       } catch (err) {
@@ -523,6 +554,24 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
       }
     },
 
+    async list_claude_live_sessions() {
+      try {
+        const sessions = await listClaudeLiveSessions();
+        return textResult({ sessions });
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+
+    async send_to_claude_session(args: z.infer<typeof SendToClaudeSessionSchema>) {
+      try {
+        const result = await sendToClaudeSession(args.target, args.text);
+        return textResult(result);
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+
     async get_bridge_status() {
       try {
         const status =
@@ -572,6 +621,9 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
             shared,
             note: memoryNote(shared, bytes),
           },
+          live: session.live,
+          processPid: session.pid,
+          liveStatus: session.liveStatus,
           runs: headless,
         });
       } catch (err) {

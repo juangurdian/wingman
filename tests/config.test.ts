@@ -13,6 +13,7 @@ import {
   resolveClaudeModelOverride,
   resolveClaudeToolList,
   resolveClaudeApprovalTimeoutMs,
+  CLAUDE_APPROVAL_TIMEOUT_MS_CAP,
   splitPathList,
   CLAUDE_SEND_TIMEOUT_MS_DEFAULT,
   CLAUDE_MAX_TURNS_DEFAULT,
@@ -138,6 +139,9 @@ describe('Claude turn configuration', () => {
     vi.stubEnv('WINGMAN_CLAUDE_APPROVAL_TIMEOUT_MS', '2500');
     expect(resolveClaudeApprovalTimeoutMs()).toBe(2500);
     expect(resolveClaudeApprovalTimeoutMs(80)).toBe(80);
+    expect(resolveClaudeApprovalTimeoutMs(3_000_000_000)).toBe(CLAUDE_APPROVAL_TIMEOUT_MS_CAP);
+    vi.stubEnv('WINGMAN_CLAUDE_APPROVAL_TIMEOUT_MS', '3000000000');
+    expect(resolveClaudeApprovalTimeoutMs()).toBe(CLAUDE_APPROVAL_TIMEOUT_MS_CAP);
   });
 
   it('splits path lists on the given delimiter so Windows drive letters stay intact', () => {

@@ -67,7 +67,7 @@ Speak as the user when configuring their accounts; never paste the token into pu
 
 After pairing, prefer these tools (in order):
 
-1. `list_sessions` — `{ "provider": "codex" }` or `{ "provider": "claude" }` or omit for both
+1. `list_sessions` — `{ "provider": "codex" }` or `{ "provider": "claude" }` or omit for both. Optional `state`: `live`, `past`, or `all`. Live means a Claude inbox pid is still running.
 2. `read_transcript` — `{ "provider": "...", "session_id": "...", "limit": 30 }`
 3. `send_message` — `{ "provider": "...", "session_id": "...", "text": "..." }`
 4. `interrupt` — if a turn is stuck
@@ -75,6 +75,7 @@ After pairing, prefer these tools (in order):
 6. `wait_turn`: long-poll a Codex or Claude turn. It returns early while an approval is pending.
 7. `list_approvals` / `resolve_approval`: Codex and Claude. An unanswered Claude prompt is denied.
 8. `steer`: mid-turn guidance. Claude queues it on the headless query Wingman owns.
+9. `list_claude_live_sessions` / `send_to_claude_session`: the interactive inbox. A live `send_message` uses that inbox. A second `send_message` during an active Wingman turn is rejected; use `steer` or `interrupt`.
 
 ### Multi-host identification
 

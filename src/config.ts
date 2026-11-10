@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -221,12 +221,15 @@ export function resolveClaudeToolList(
  * Priority: explicit arg > WINGMAN_CLAUDE_APPROVAL_TIMEOUT_MS > 120000.
  * On timeout the prompt is denied.
  */
+/** Same cap as the MCP `approval_timeout_ms` field. Above this, Node clamps setTimeout to 1ms. */
+export const CLAUDE_APPROVAL_TIMEOUT_MS_CAP = 600_000;
+
 export function resolveClaudeApprovalTimeoutMs(explicit?: number): number {
   if (explicit !== undefined && Number.isInteger(explicit) && explicit > 0) {
-    return explicit;
+    return Math.min(explicit, CLAUDE_APPROVAL_TIMEOUT_MS_CAP);
   }
   const env = positiveInt(process.env.WINGMAN_CLAUDE_APPROVAL_TIMEOUT_MS);
-  if (env) return env;
+  if (env) return Math.min(env, CLAUDE_APPROVAL_TIMEOUT_MS_CAP);
   return CLAUDE_APPROVAL_TIMEOUT_MS_DEFAULT;
 }
 
@@ -291,6 +294,56 @@ export function isCodexModelApiOnly(model: string): boolean {
   return CODEX_API_ONLY_MODELS.some(
     (m) => normalized === m.toLowerCase() || normalized.startsWith(`${m.toLowerCase()}-`)
   );
+}
+
+// Codex shared app-server (attach mode)
+
+/**
+ * Control socket created by `codex app-server daemon start` or
+ * `codex app-server --listen unix://`. The ChatGPT desktop app does not create it.
+ */
+export function defaultCodexSocketPath(): string {
+  const codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), '.codex');
+  return join(codexHome, 'app-server-control', 'app-server-control.sock');
+}
+
+/**
+ * Socket path for attach mode.
+ * Unset means spawn mode. `auto` uses the default control socket path.
+ */
+export function resolveCodexSocket(): string | undefined {
+  const env = process.env.WINGMAN_CODEX_SOCKET?.trim();
+  if (!env) return undefined;
+  if (env.toLowerCase() === 'auto') return defaultCodexSocketPath();
+  return env;
+}
+
+/** True when the operator asked to attach, whether or not the socket exists yet. */
+export function useCodexAttachMode(): boolean {
+  return Boolean(process.env.WINGMAN_CODEX_SOCKET?.trim());
+}
+
+export function codexSocketExists(socketPath?: string): boolean {
+  const path = socketPath || defaultCodexSocketPath();
+  try {
+    return existsSync(path) && statSync(path).isSocket();
+  } catch {
+    return existsSync(path);
+  }
+}
+
+/** Optional Claude CLI path. The Agent SDK remains the default for headless turns. */
+export function resolveClaudePath(): string {
+  return process.env.WINGMAN_CLAUDE_PATH?.trim() || 'claude';
+}
+
+/**
+ * Reserved for a future stream-json worker. Headless turns still use the Agent SDK.
+ * Live interactive sessions use the cross-session inbox instead.
+ */
+export function useClaudeStreamJson(): boolean {
+  const env = process.env.WINGMAN_CLAUDE_STREAM_JSON?.trim().toLowerCase();
+  return env === '1' || env === 'true';
 }
 
 // Host identity configuration

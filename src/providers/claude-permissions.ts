@@ -176,10 +176,14 @@ export class ClaudePermissionBroker {
     });
   }
 
-  /** Deny every prompt still open for this session. Used by interrupt. */
-  cancelSession(sessionId: string, message = 'Turn interrupted before approval.'): void {
+  /**
+   * Deny prompts still open for this session.
+   * Pass turnId so a finished turn cannot deny a newer turn's prompts.
+   */
+  cancelSession(sessionId: string, message = 'Turn interrupted before approval.', turnId?: string): void {
     for (const [id, pending] of this.pending) {
       if (pending.approval.sessionId !== sessionId) continue;
+      if (turnId && pending.approval.turnId !== turnId) continue;
       this.finish(id, denied(message, pending.toolUseID));
     }
   }
@@ -250,12 +254,12 @@ function stringField(input: Record<string, unknown>, key: string): string | unde
   const value = input[key];
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
-  return trimmed ? trimmed.slice(0, 500) : undefined;
+  return trimmed || undefined;
 }
 
 function summarizeInput(toolName: string, input: Record<string, unknown>): string {
   const content = ruleContentFor(toolName, input);
-  if (content) return content;
+  if (content) return content.slice(0, 500);
   try {
     return JSON.stringify(input).slice(0, 500);
   } catch {

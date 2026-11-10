@@ -68,6 +68,7 @@ Cloud AI assistants need to collaborate with local agents, but cannot reach `127
 | Headless runs | ✅ Shipped. `start_codex_exec` (no `--full-auto`) and `run_headless`, polled with `get_run` |
 | Session status and stop | ✅ Shipped. `get_status` (git HEAD, dirty files, pending prompt) and `stop` with RSS |
 | Caller path allowlist | ✅ Shipped. `WINGMAN_ALLOWED_PATHS` and `~/.wingman/allowlist.json` |
+| Claude inbox and Codex attach | ✅ Shipped. `list_claude_live_sessions`, `send_to_claude_session`, `list_sessions` state, and `WINGMAN_CODEX_SOCKET` attach mode. `wingman-live-setup` prints the daemon steps. See [live session injection](docs/live-session-injection.md). |
 
 ### Later
 

@@ -28,6 +28,17 @@ export interface SessionSummary {
   hostId?: string;
   /** Human-friendly host name for display. */
   hostName?: string;
+  /**
+   * True when a Claude interactive process is alive (registry pid is running).
+   * Unset or false means past, headless, or not checked.
+   */
+  live?: boolean;
+  /** OS pid of the interactive Claude process, when the registry has one. */
+  pid?: number;
+  /** Status string from `claude agents` or the session registry. */
+  liveStatus?: string;
+  /** Registry session kind, when present. */
+  kind?: string;
 }
 
 export interface TranscriptItem {
@@ -260,6 +271,8 @@ export interface SendMessageOptions {
   approvalTimeoutMs?: number;
   /** Internal. create_session's first prompt is a new session, not a resume. */
   binding?: 'new' | 'resume';
+  /** Codex: send even when the thread is already loaded by another client. */
+  force?: boolean;
 }
 
 export interface SessionActivity {
@@ -277,7 +290,7 @@ export interface SessionActivity {
 
 export interface SessionProvider {
   readonly name: ProviderName;
-  listSessions(): Promise<SessionSummary[]>;
+  listSessions(opts?: { state?: 'live' | 'past' | 'all' }): Promise<SessionSummary[]>;
   /** Live state used by get_status. Optional so stubs and Muse can omit it. */
   activity?(sessionId: string): SessionActivity;
   getSession?(sessionId: string): Promise<SessionDetail | null>;
