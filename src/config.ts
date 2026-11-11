@@ -14,10 +14,16 @@ export interface BridgeConfig {
   hostId?: string;
   /** Human-friendly host name for display (e.g., 'Pearlwolf Windows', 'MacBook Pro') */
   hostName?: string;
+  /** Public hostname allowed by DNS rebinding checks (Tailscale MagicDNS or a tunnel host). */
+  tunnelHost?: string;
+  /** Path to the tailscale binary, including tailscale.exe on Windows. */
+  tailscaleBin?: string;
 }
 
-/** Preferred config directory (~/.wingman). */
+/** Preferred config directory (~/.wingman, or WINGMAN_CONFIG_DIR when set). */
 export function configDir(): string {
+  const override = process.env.WINGMAN_CONFIG_DIR?.trim();
+  if (override) return override;
   return join(homedir(), '.wingman');
 }
 
@@ -76,6 +82,7 @@ export function resolvePort(explicit?: number): number {
   return 3847;
 }
 
+/** Loopback unless WINGMAN_HOST or SESSION_BRIDGE_HOST is set. Use 0.0.0.0 only on purpose. */
 export function resolveHost(): string {
   return envFirst('WINGMAN_HOST', 'SESSION_BRIDGE_HOST') || '127.0.0.1';
 }
@@ -377,4 +384,133 @@ export function resolveHostName(): string {
 export function maskToken(token: string): string {
   if (token.length <= 4) return '****';
   return `${token.slice(0, 4)}…`;
+}
+
+const WEAK_TOKEN_PREFIXES = [
+  'smoke-',
+  'test-',
+  'test_',
+  'dev-',
+  'dummy-',
+  'example-',
+  'changeme-',
+  'password-',
+  'secret-',
+];
+
+const WEAK_TOKEN_EXACT = new Set([
+  'smoke',
+  'test',
+  'testing',
+  'dev',
+  'dummy',
+  'example',
+  'changeme',
+  'password',
+  'secret',
+  'token',
+  'wingman',
+  'debug',
+  'placeholder',
+]);
+
+/** Why a token looks like a fixture. Undefined means it does not match the known patterns. */
+export function weakTokenReason(token: string): string | undefined {
+  const value = token.trim();
+  if (!value) return 'is empty';
+  const lower = value.toLowerCase();
+  for (const prefix of WEAK_TOKEN_PREFIXES) {
+    if (!lower.startsWith(prefix)) continue;
+    // A token that is only the prefix would otherwise be copied into the warning.
+    return lower === prefix ? 'starts with a known test prefix' : `starts with ${prefix}`;
+  }
+  if (WEAK_TOKEN_EXACT.has(lower)) return 'is a known placeholder';
+  return undefined;
+}
+
+export function isWeakToken(token: string): boolean {
+  return weakTokenReason(token) !== undefined;
+}
+
+/** Replace a configured bearer token with its masked form, whatever its length. */
+export function redactToken(text: string, token: string | undefined): string {
+  if (!token || !text.includes(token)) return text;
+  return text.split(token).join(maskToken(token));
+}
+
+export function safeErrorText(err: unknown, secrets: Array<string | undefined> = []): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return secrets.reduce<string>((text, secret) => redactToken(text, secret), raw);
+}
+
+export interface RotationResult {
+  path: string;
+  token: string;
+  previous?: string;
+  previousWasWeak: boolean;
+  weakReason?: string;
+}
+
+/**
+ * Write a new random token into the config file.
+ * A process that is already listening keeps the old token until it restarts.
+ */
+export function rotateStoredToken(now = new Date().toISOString()): RotationResult {
+  const existing = loadConfig();
+  const previous = existing?.token;
+  const token = generateToken();
+  const next: BridgeConfig = {
+    host: existing?.host ?? resolveHost(),
+    port: existing?.port ?? resolvePort(),
+    mcpPath: existing?.mcpPath ?? '/mcp',
+    mock: existing?.mock,
+    hostId: existing?.hostId,
+    hostName: existing?.hostName,
+    tunnelHost: existing?.tunnelHost,
+    tailscaleBin: existing?.tailscaleBin,
+    ...existing,
+    token,
+    createdAt: now,
+  };
+  const path = saveConfig(next);
+  return {
+    path,
+    token,
+    previous,
+    previousWasWeak: previous ? isWeakToken(previous) : false,
+    weakReason: previous ? weakTokenReason(previous) : undefined,
+  };
+}
+
+export function formatRotationMessage(input: {
+  path: string;
+  token: string;
+  showToken: boolean;
+  previousWasWeak?: boolean;
+  weakReason?: string;
+  connectorUrl?: string;
+}): string {
+  const display = input.showToken ? input.token : maskToken(input.token);
+  const url = input.connectorUrl ?? 'https://<tailscale-or-tunnel-host>/mcp';
+  const lines = [
+    'Rotated the Wingman bearer token.',
+    `Config: ${input.path}`,
+    `Token: ${display}${input.showToken ? '' : ' (masked; pass --show-token to print it once)'}`,
+    '',
+    'A process that is already running keeps the previous token until it restarts.',
+    'The next start of wingman-pair, or the Wingman scheduled task, reads this file.',
+    'WINGMAN_TOKEN in the environment wins over the file. Unset it or the new token never takes effect.',
+    '',
+    'Update the MCP connector:',
+    `  url: ${url}`,
+    `  Authorization: Bearer ${display}`,
+  ];
+  if (input.previousWasWeak && input.weakReason) {
+    lines.push('', `The previous token ${input.weakReason}. It has been replaced.`);
+  }
+  const text = lines.join('\n');
+  if (!input.showToken && text.includes(input.token)) {
+    throw new Error('Refusing to print a rotation message that contains the full token');
+  }
+  return text;
 }

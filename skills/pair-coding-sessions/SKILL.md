@@ -37,19 +37,19 @@ CLAUDE_MOCK=1 npm run pair
 npm run pair
 ```
 
-Note the printed **token** and local URL (`http://127.0.0.1:3847/mcp`).
+Pair prints a short token prefix. The full token is in the config file. Pass `--show-token` only while registering the connector. Local URL: `http://127.0.0.1:3847/mcp`.
 
-Config is written to `~/.wingman/config.json` (legacy `~/.session-bridge/config.json` is still read as a fallback).
+Config is written to `~/.wingman/config.json` (legacy `~/.session-bridge/config.json` is still read as a fallback). Rotate with `wingman-pair --rotate-token` or `wingman-token rotate`, then restart the bridge. Do not paste the token into chat.
 
 ### 2. Tunnel localhost
 
 ```bash
+wingman-tunnel tailscale
+# or, for a demo whose hostname changes every start:
 cloudflared tunnel --url http://127.0.0.1:3847
-# or
-tailscale funnel 3847
 ```
 
-Copy the public HTTPS origin and append `/mcp`.
+Copy the public HTTPS origin and append `/mcp`. `wingman-tunnel diagnose` reports Funnel status, including `Funnel not enabled on tailnet` and the approval link. On Windows, `wingman-task install --tunnel tailscale` starts the bridge at logon and checks that Funnel is active.
 
 ### 3. Register MCP with Grok / Cursor
 
@@ -67,15 +67,15 @@ Speak as the user when configuring their accounts; never paste the token into pu
 
 After pairing, prefer these tools (in order):
 
-1. `list_sessions` — `{ "provider": "codex" }` or `{ "provider": "claude" }` or omit for both. Optional `state`: `live`, `past`, or `all`. Live means a Claude inbox pid is still running.
-2. `read_transcript` — `{ "provider": "...", "session_id": "...", "limit": 30 }`
-3. `send_message` — `{ "provider": "...", "session_id": "...", "text": "..." }`
-4. `interrupt` — if a turn is stuck
-5. `create_session` — `{ "provider": "...", "cwd": "...", "prompt": "...", "model": "..." }`
+1. `list_sessions`: `{ "provider": "codex" }` or `{ "provider": "claude" }` or omit for both. Optional `state`: `live`, `past`, or `all`. Live means a Claude inbox pid is still running.
+2. `read_transcript`: `{ "provider": "...", "session_id": "...", "limit": 30 }`
+3. `send_message`: `{ "provider": "...", "session_id": "...", "text": "..." }`
+4. `interrupt`: if a turn is stuck
+5. `create_session`: `{ "provider": "...", "cwd": "...", "prompt": "...", "model": "..." }`
 6. `wait_turn`: long-poll a Codex or Claude turn. It returns early while an approval is pending.
 7. `list_approvals` / `resolve_approval`: Codex and Claude. An unanswered Claude prompt is denied.
 8. `steer`: mid-turn guidance. Claude queues it on the headless query Wingman owns.
-9. `list_claude_live_sessions` / `send_to_claude_session`: the interactive inbox. A live `send_message` uses that inbox. A second `send_message` during an active Wingman turn is rejected; use `steer` or `interrupt`.
+9. `list_claude_live_sessions` / `send_to_claude_session`: the interactive inbox. A live `send_message` uses that inbox. If the session stays idle, status is `queued_not_started` (some Claude Code builds wait for Enter; the wire protocol has no submit line). Do not start a headless resume while that session is mid-turn. A second `send_message` during an active Wingman turn is rejected; use `steer` or `interrupt`. `stalled_on_approval` on `list_sessions` and `get_status` means an approval has been waiting at least 10 minutes.
 
 ### Multi-host identification
 
@@ -98,7 +98,7 @@ Sessions now include `hostId` and `hostName` fields so MCP clients can tell whic
 
 ### Claude session discovery
 
-Sessions include a `source` field: `'wingman'` (created via Wingman) or `'discovered'` (found via SDK). Set `CLAUDE_DISCOVER=0` to disable discovery. This is NOT TTY hijacking — it reads session files on disk, not terminal processes.
+Sessions include a `source` field: `'wingman'` (created via Wingman) or `'discovered'` (found via SDK). Set `CLAUDE_DISCOVER=0` to disable discovery. This is not TTY hijacking. It reads session files on disk, not terminal processes.
 
 ## Mock vs real
 
@@ -133,7 +133,7 @@ If session creation fails due to model access, either ensure you have the requir
 
 ## Session scope
 
-Wingman manages sessions it creates — it does **not** hijack or attach to:
+Wingman manages sessions it creates. It does **not** hijack or attach to:
 - Arbitrary `codex` processes you already have running
 - Claude Code TTYs you opened in another terminal
 - Any interactive shell sessions

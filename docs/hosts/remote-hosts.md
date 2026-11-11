@@ -1,6 +1,6 @@
 # Remote MCP Hosts (Grok Bot & Others)
 
-Wingman is designed primarily for **remote MCP hosts** — cloud-based AI assistants that need to interact with coding agents running on your local machine. This guide covers Grok Bot and similar remote hosts.
+Wingman is designed primarily for remote MCP hosts: cloud assistants that need to talk to coding agents on your machine. This guide covers Grok Bot and similar remote hosts.
 
 ## Overview
 
@@ -39,24 +39,24 @@ npm run pair
 npm run pair
 ```
 
-Note the printed **token** and local URL.
+The printed token is a short prefix. The full value is in `~/.wingman/config.json`. Pass `--show-token` only while you paste it into the connector. The local URL is `http://127.0.0.1:3847/mcp`.
 
 ### Step 2: Create a Tunnel
 
 Grok Bot runs in the cloud and cannot reach localhost. Create a tunnel:
 
 ```bash
-# Recommended: Tailscale Funnel (stable)
-tailscale funnel 3847
+# Recommended: Tailscale Funnel (stable MagicDNS URL)
+wingman-tunnel tailscale
 
-# Alternative: Cloudflare quick tunnel (ephemeral)
+# Alternative: Cloudflare quick tunnel (ephemeral, hostname changes every start)
 cloudflared tunnel --url http://127.0.0.1:3847
 
 # Production: Cloudflare named tunnel (permanent domain)
 cloudflared tunnel run wingman
 ```
 
-For detailed tunnel setup, run `wingman-tunnel` or see the main [README](../../README.md#after-pairing).
+`wingman-tunnel diagnose` reports Funnel status, including `Funnel not enabled on tailnet` and the approval link when the tailnet has not turned Funnel on. For the Windows logon task that also checks the tunnel, see [Operations](../operations.md). The bearer token stays masked there too.
 
 ### Step 3: Register with Grok Bot
 
@@ -66,7 +66,7 @@ Use Grok Bot's MCP server registration (typically `AddMcpServer` or similar):
 |-------|-------|
 | **name** | `wingman` |
 | **url** | `https://YOUR-TUNNEL-URL/mcp` |
-| **Authorization** | `Bearer YOUR_TOKEN_HERE` |
+| **Authorization** | `Bearer` plus the token from `~/.wingman/config.json` (pair prints only a prefix unless you pass `--show-token`) |
 
 ### Step 4: Use Wingman Tools
 
@@ -168,9 +168,9 @@ Multiple hosts (Grok, Cursor, Muse) can share the same Wingman tunnel simultaneo
 
 ### Token Handling
 
-- **Never share tokens publicly** — Each pairing generates a unique token
-- **Regenerate tokens** — Run `wingman-pair` to get a new token anytime
-- **Don't commit tokens** — Keep `~/.wingman/` out of version control
+- **Never share tokens publicly.** Each pairing generates a unique token. Pair prints only a prefix unless you pass `--show-token`.
+- **Rotate tokens** with `wingman-pair --rotate-token` or `wingman-token rotate`, then restart Wingman and update the connector.
+- **Don't commit tokens.** Keep `~/.wingman/` out of version control.
 
 ### Tunnel Security
 
@@ -183,7 +183,7 @@ Multiple hosts (Grok, Cursor, Muse) can share the same Wingman tunnel simultaneo
 
 ### Network Binding
 
-Wingman binds to `127.0.0.1` by default — it's not directly accessible from other machines. The tunnel is the only path in.
+Wingman binds to `127.0.0.1` by default. It is not directly accessible from other machines. The tunnel is the path in. DNS rebinding protection stays on, including when you opt into `0.0.0.0`.
 
 ## Troubleshooting
 
@@ -216,9 +216,9 @@ WINGMAN_HEALTHZ_AUTH_FREE=1 npm run pair
 
 ## Related Guides
 
-- [Muse Code](muse-code.md) — Muse Code setup and multi-host scenarios
-- [Cursor IDE](cursor-ide.md) — Desktop IDE with remote MCP support
-- [Claude Desktop](claude-desktop.md) — Limitations and workarounds
-- [Generic MCP Client](generic-mcp-client.md) — Protocol details and checklist
-- [Main README](../../README.md) — Full documentation
-- [Skill: Pair Coding Sessions](../../skills/pair-coding-sessions/SKILL.md) — Step-by-step pairing guide
+- [Muse Code](muse-code.md): Muse Code setup and multi-host scenarios
+- [Cursor IDE](cursor-ide.md): desktop IDE with remote MCP support
+- [Claude Desktop](claude-desktop.md): limitations and workarounds
+- [Generic MCP Client](generic-mcp-client.md): protocol details and checklist
+- [Main README](../../README.md): full documentation
+- [Skill: Pair Coding Sessions](../../skills/pair-coding-sessions/SKILL.md): step-by-step pairing guide

@@ -55,6 +55,7 @@ import {
   sendToClaudeSession as sendToClaudeInbox,
   type ClaudeLiveSession,
 } from '../claude-inbox.js';
+import { deliverInteractiveInbox, resolveInboxFallback, resolveInboxPickupMs } from '../inbox-pickup.js';
 import { ClaudePermissionBroker } from './claude-permissions.js';
 
 const TURN_ALREADY_ACTIVE = 'turn already active; use steer or interrupt';
@@ -603,31 +604,49 @@ export class ClaudeProvider implements SessionProvider {
       return this.sendMessageMock(sessionId, text, binding, opts);
     }
     if (binding !== 'new') {
-      const delivered = await this.tryInboxDelivery(sessionId, text);
+      const delivered = await this.tryInboxDelivery(sessionId, text, opts);
       if (delivered) return delivered;
     }
     const cwd = loadRegistry().sessions.find((s) => s.sessionId === sessionId)?.cwd;
     return this.beginRealTurn(sessionId, text, cwd, binding, opts);
   }
 
-  /** Deliver into a running interactive Claude process. Does not start a second headless query. */
-  private async tryInboxDelivery(sessionId: string, text: string): Promise<SendMessageResult | undefined> {
+  /**
+   * Deliver into a running interactive Claude process.
+   * A headless resume runs only when the caller asked for it and the session is idle.
+   */
+  private async tryInboxDelivery(
+    sessionId: string,
+    text: string,
+    opts?: SendMessageOptions,
+  ): Promise<SendMessageResult | undefined> {
     try {
       const liveSessions = await listClaudeLiveSessions();
       const liveSession = liveSessions.find((s) => s.sessionId === sessionId);
       if (!liveSession?.live || !liveSession.messagingSocketPath) return undefined;
-      const inboxResult = await sendToClaudeInbox(sessionId, text);
-      if (inboxResult.delivered) {
-        return {
-          sessionId,
-          status: 'delivered_via_inbox',
-          attachedToTerminal: true,
-          note: 'Delivered on the interactive session inbox. This did not start a headless resume.',
-        };
+      const delivery = await deliverInteractiveInbox({
+        sessionId,
+        beforeStatus: liveSession.status ?? liveSession.state,
+        pickupMs: resolveInboxPickupMs(opts?.inboxPickupMs),
+        fallback: resolveInboxFallback(opts?.inboxFallback),
+        send: async () => {
+          const inboxResult = await sendToClaudeInbox(sessionId, text);
+          return { delivered: inboxResult.delivered, error: inboxResult.error };
+        },
+        list: async () => {
+          const again = await listClaudeLiveSessions();
+          return again.map((session) => ({
+            sessionId: session.sessionId,
+            status: session.status,
+            state: session.state,
+          }));
+        },
+      });
+      if (delivery.headless) {
+        console.warn(`[claude] ${delivery.result.note ?? 'Falling back to a headless resume.'}`);
+        return undefined;
       }
-      console.warn(
-        `[claude] Inbox delivery failed for live session ${sessionId}: ${inboxResult.error ?? 'not delivered'}. Falling back to a headless resume.`,
-      );
+      return delivery.result;
     } catch (err) {
       console.warn(`[claude] Live session check failed: ${err instanceof Error ? err.message : err}`);
     }

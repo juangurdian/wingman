@@ -86,6 +86,8 @@ export interface LocalDiagnosis extends RemoteClassification {
   serverListening: boolean;
   tunnel?: RemoteClassification;
   heartbeatAgeMs?: number | null;
+  heartbeatStale?: boolean;
+  heartbeatWarning?: string;
 }
 
 /**
@@ -110,6 +112,13 @@ export function diagnoseLocal(input: {
         })
       : undefined;
 
+  const beat = describeHeartbeat(input.heartbeatAgeMs ?? null);
+  const beatFields = {
+    heartbeatAgeMs: beat.heartbeatAgeMs,
+    heartbeatStale: beat.heartbeatStale,
+    heartbeatWarning: beat.heartbeatWarning,
+  };
+
   if (localUp && tunnel?.state === 'tunnel_down') {
     return {
       state: 'tunnel_down',
@@ -118,7 +127,7 @@ export function diagnoseLocal(input: {
       hostOnline: true,
       serverListening: true,
       tunnel,
-      heartbeatAgeMs: input.heartbeatAgeMs,
+      ...beatFields,
     };
   }
 
@@ -131,7 +140,7 @@ export function diagnoseLocal(input: {
       hostOnline: true,
       serverListening: true,
       tunnel,
-      heartbeatAgeMs: input.heartbeatAgeMs,
+      ...beatFields,
     };
   }
 
@@ -147,7 +156,7 @@ export function diagnoseLocal(input: {
       hostOnline: true,
       serverListening: false,
       tunnel,
-      heartbeatAgeMs: input.heartbeatAgeMs,
+      ...beatFields,
     };
   }
 
@@ -158,7 +167,7 @@ export function diagnoseLocal(input: {
       hostOnline: true,
       serverListening: false,
       tunnel,
-      heartbeatAgeMs: input.heartbeatAgeMs,
+      ...beatFields,
     };
   }
 
@@ -168,7 +177,7 @@ export function diagnoseLocal(input: {
     hostOnline: true,
     serverListening: false,
     tunnel,
-    heartbeatAgeMs: input.heartbeatAgeMs,
+    ...beatFields,
   };
 }
 
@@ -210,6 +219,41 @@ export function heartbeatAgeMs(beat: Heartbeat | null, now = Date.now()): number
   return Math.max(0, now - then);
 }
 
+/** A beat older than this means the process is stopped, hung, or the machine slept. */
+export const HEARTBEAT_STALE_MS = 5 * 60 * 1000;
+
+export interface HeartbeatReport {
+  heartbeatAgeMs: number | null;
+  heartbeatStale: boolean;
+  heartbeatWarning?: string;
+}
+
+/**
+ * heartbeat.json is rewritten about every 15 seconds while Wingman is running.
+ * Older than 5 minutes means that process is not writing beats. It does not by
+ * itself mean the tunnel is down. After a reboot, a stale or missing file means
+ * nothing restarted Wingman.
+ */
+export function describeHeartbeat(ageMs: number | null, staleAfterMs = HEARTBEAT_STALE_MS): HeartbeatReport {
+  if (ageMs == null) {
+    return {
+      heartbeatAgeMs: null,
+      heartbeatStale: true,
+      heartbeatWarning:
+        'No heartbeat.json. Wingman is not recording beats. It may never have started on this boot, or the file was removed. A missing beat does not by itself mean the tunnel is down.',
+    };
+  }
+  if (ageMs > staleAfterMs) {
+    return {
+      heartbeatAgeMs: ageMs,
+      heartbeatStale: true,
+      heartbeatWarning:
+        `heartbeat.json is ${ageMs}ms old, past the ${staleAfterMs}ms stale limit. The file is rewritten about every 15 seconds while Wingman is running, so the process is stopped, hung, or the machine slept and nothing wrote a new beat. This does not by itself mean the tunnel is down.`,
+    };
+  }
+  return { heartbeatAgeMs: ageMs, heartbeatStale: false };
+}
+
 export interface BridgeStatus {
   ok: true;
   service: 'wingman';
@@ -219,6 +263,10 @@ export interface BridgeStatus {
   version: string;
   port?: number;
   /** How a remote client should read a failed call. This process cannot say it once it is dead. */
+  heartbeatAgeMs: number | null;
+  heartbeatStale: boolean;
+  /** Set when the on-disk beat is missing or older than 5 minutes. */
+  heartbeatWarning?: string;
   ifUnreachable: {
     cloudflare_1033_or_http_530: string;
     http_502_or_504: string;
@@ -233,8 +281,13 @@ export function buildBridgeStatus(input: {
   now?: number;
   port?: number;
   version?: string;
+  /** Pass null when the file is missing. Omit to read ~/.wingman/heartbeat.json. */
+  heartbeatAgeMs?: number | null;
 }): BridgeStatus {
   const now = input.now ?? Date.now();
+  const age =
+    input.heartbeatAgeMs !== undefined ? input.heartbeatAgeMs : heartbeatAgeMs(readHeartbeat(), now);
+  const beat = describeHeartbeat(age);
   return {
     ok: true,
     service: 'wingman',
@@ -243,6 +296,9 @@ export function buildBridgeStatus(input: {
     uptimeMs: Math.max(0, now - input.startedAtMs),
     version: input.version ?? '0.2.0',
     port: input.port,
+    heartbeatAgeMs: beat.heartbeatAgeMs,
+    heartbeatStale: beat.heartbeatStale,
+    heartbeatWarning: beat.heartbeatWarning,
     ifUnreachable: {
       cloudflare_1033_or_http_530: TUNNEL_DOWN,
       http_502_or_504: SERVER_DOWN,

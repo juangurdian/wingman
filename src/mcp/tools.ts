@@ -7,7 +7,7 @@ import type { SessionSummary, Transcript, TranscriptItem } from '../providers/ty
 import { isPathAllowed, resolveAllowlist, type AllowlistPolicy } from '../allowlist.js';
 import { readGitSnapshot, type GitRunner } from '../git-status.js';
 import { HeadlessRuns } from '../headless-runs.js';
-import { deriveSessionState, memoryNote } from '../session-status.js';
+import { approvalStallFields, deriveSessionState, memoryNote } from '../session-status.js';
 import { readRssBytes } from '../process-rss.js';
 import { buildBridgeStatus, type BridgeStatus } from '../reachability.js';
 import { listClaudeLiveSessions, sendToClaudeSession } from '../claude-inbox.js';
@@ -95,6 +95,19 @@ export const SendMessageSchema = z.object({
     .boolean()
     .optional()
     .describe('Codex: send even when another client already has the thread loaded.'),
+  inbox_fallback: z
+    .enum(['none', 'headless'])
+    .optional()
+    .describe(
+      'Claude interactive inbox. none reports queued_not_started when the session stays idle. headless resumes only after the wait, and only while the session is idle. Never used mid-turn.',
+    ),
+  inbox_pickup_ms: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(60_000)
+    .optional()
+    .describe('How long to watch an idle interactive Claude session for a turn to start. Default 5000.'),
   ...claudeTurnFields,
   ...callerField,
 });
@@ -294,6 +307,30 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
     });
   }
 
+  async function stampApprovalStall(sessions: SessionSummary[]): Promise<SessionSummary[]> {
+    const now = Date.now();
+    const stamped: SessionSummary[] = [];
+    for (const session of sessions) {
+      if (session.status === 'not_enabled' || session.id.startsWith('_')) {
+        stamped.push({ ...session, pendingApprovalAgeMs: null, stalled_on_approval: false });
+        continue;
+      }
+      const provider = providers.get(session.provider);
+      if (!provider.listApprovals) {
+        stamped.push({ ...session, pendingApprovalAgeMs: null, stalled_on_approval: false });
+        continue;
+      }
+      try {
+        const listed = await provider.listApprovals(session.id);
+        stamped.push({ ...session, ...approvalStallFields(listed.approvals, now), approval_lookup: 'ok' });
+      } catch {
+        const { pendingApprovalAgeMs: _age, stalled_on_approval: _stalled, ...rest } = session;
+        stamped.push({ ...rest, approval_lookup: 'unavailable' });
+      }
+    }
+    return stamped;
+  }
+
   return {
     async list_sessions(args: z.infer<typeof ListSessionsSchema>) {
       try {
@@ -319,7 +356,7 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
                 id: '_codex_stub',
                 provider: 'codex' as const,
                 preview: isSpawnError 
-                  ? 'Codex binary not found — install Codex or set CODEX_MOCK=1' 
+                  ? 'Codex binary not found. Install Codex or set CODEX_MOCK=1' 
                   : errMsg,
                 status: 'not_enabled',
               });
@@ -349,7 +386,8 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
         } else if (state === 'past') {
           visible = visible.filter((session) => session.status !== 'not_enabled' && session.live !== true);
         }
-        return textResult({ sessions: visible });
+        const stamped = await stampApprovalStall(visible);
+        return textResult({ sessions: stamped });
       } catch (err) {
         return errorResult(err);
       }
@@ -379,6 +417,8 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
           forkSession: args.fork_session,
           approvalTimeoutMs: args.approval_timeout_ms,
           force: args.force,
+          inboxFallback: args.inbox_fallback,
+          inboxPickupMs: args.inbox_pickup_ms,
         });
         return textResult(result);
       } catch (err) {
@@ -565,7 +605,7 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
 
     async send_to_claude_session(args: z.infer<typeof SendToClaudeSessionSchema>) {
       try {
-        const result = await sendToClaudeSession(args.target, args.text);
+        const result = await sendToClaudeSession(args.target, args.text, { watch: true });
         return textResult(result);
       } catch (err) {
         return errorResult(err);
@@ -589,9 +629,23 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
         const provider = providers.get(args.provider);
         const session = provider.getSession ? await provider.getSession(args.session_id) : null;
         if (!session) return errorResult(`Session not found: ${args.session_id}`);
-        const approvals = provider.listApprovals
-          ? await provider.listApprovals(args.session_id)
-          : { sessionId: args.session_id, approvals: [] };
+        let approvals: { approvals: Array<{ requestedAt: number }> } = { approvals: [] };
+        let stall: { pendingApprovalAgeMs?: number | null; stalled_on_approval?: boolean } = {
+          pendingApprovalAgeMs: null,
+          stalled_on_approval: false,
+        };
+        let approval_lookup: 'ok' | 'unavailable' | 'unsupported' = 'unsupported';
+        if (provider.listApprovals) {
+          try {
+            const listed = await provider.listApprovals(args.session_id);
+            approvals = listed;
+            stall = approvalStallFields(listed.approvals);
+            approval_lookup = 'ok';
+          } catch {
+            approval_lookup = 'unavailable';
+            stall = {};
+          }
+        }
         const activity = provider.activity?.(args.session_id);
         const state = deriveSessionState({
           running: activity?.running ?? session.status === 'running',
@@ -624,6 +678,9 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
           live: session.live,
           processPid: session.pid,
           liveStatus: session.liveStatus,
+          pendingApprovalAgeMs: stall.pendingApprovalAgeMs,
+          stalled_on_approval: stall.stalled_on_approval,
+          approval_lookup,
           runs: headless,
         });
       } catch (err) {

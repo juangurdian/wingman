@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Wingman doctor — health check for your environment.
+ * Wingman doctor: health check for your environment.
  * Checks:
  * - Node.js version (20+ required)
  * - Config file (~/.wingman/config.json)
@@ -24,7 +24,10 @@ import {
   CODEX_API_ONLY_MODELS,
   resolveHostId,
   resolveHostName,
+  maskToken,
+  weakTokenReason,
 } from './config.js';
+import { describeHeartbeat, heartbeatAgeMs, readHeartbeat } from './reachability.js';
 
 interface CheckResult {
   name: string;
@@ -75,19 +78,21 @@ export async function checkConfig(): Promise<CheckResult> {
     };
   }
 
+  const prefix = maskToken(config.token);
   return {
     name: 'Config file',
     status: 'pass',
-    message: `Config found at ${path} (use --reuse-token to keep existing token)`,
+    message: `Config found at ${path} (token ${prefix})`,
   };
 }
 
 /**
- * Check token security — warn that pair logs print tokens to console.
+ * Pair, doctor, and diagnose print a short prefix unless --show-token is passed.
+ * A smoke- or other fixture token is a warning, not a printed secret.
  */
 export async function checkTokenSecurity(): Promise<CheckResult> {
   const config = loadConfig();
-  
+
   if (!config?.token) {
     return {
       name: 'Token security',
@@ -96,12 +101,50 @@ export async function checkTokenSecurity(): Promise<CheckResult> {
     };
   }
 
-  // Warn that tokens are printed to console during pair
+  const reason = weakTokenReason(config.token);
+  if (reason) {
+    return {
+      name: 'Token security',
+      status: 'warn',
+      message: `Configured token ${reason}. Pair output shows only ${maskToken(config.token)} unless you pass --show-token.`,
+      fix: 'Run wingman-pair --rotate-token or wingman-token rotate, then update the MCP connector.',
+    };
+  }
+
   return {
     name: 'Token security',
-    status: 'warn',
-    message: 'Pair logs print bearer token to console — avoid screen sharing during pair',
-    fix: 'Use --reuse-token when config exists to avoid regenerating/re-printing token',
+    status: 'pass',
+    message: `Token is masked in pair, doctor, and diagnose output (${maskToken(config.token)}). Pass --show-token only while setting up a connector.`,
+  };
+}
+
+/**
+ * heartbeat.json is rewritten about every 15 seconds while the process is up.
+ * Older than 5 minutes means Wingman is not writing beats.
+ */
+export async function checkHeartbeat(): Promise<CheckResult> {
+  const beat = readHeartbeat();
+  const report = describeHeartbeat(heartbeatAgeMs(beat));
+  if (!beat) {
+    return {
+      name: 'Heartbeat',
+      status: 'warn',
+      message: report.heartbeatWarning ?? 'No heartbeat.json.',
+      fix: 'Start wingman-pair, or install the scheduled task with wingman-task install so a reboot brings it back.',
+    };
+  }
+  if (report.heartbeatStale) {
+    return {
+      name: 'Heartbeat',
+      status: 'warn',
+      message: report.heartbeatWarning ?? 'Heartbeat is stale.',
+      fix: 'The Wingman process is stopped or hung. Restart it. A stale heartbeat does not by itself mean the tunnel is down. wingman-tunnel diagnose separates the two.',
+    };
+  }
+  return {
+    name: 'Heartbeat',
+    status: 'pass',
+    message: `heartbeat.json is ${report.heartbeatAgeMs}ms old (rewritten about every 15 seconds while Wingman is running).`,
   };
 }
 
@@ -277,14 +320,14 @@ export async function checkMuseBinary(): Promise<CheckResult> {
         resolve({
           name: 'Muse binary',
           status: 'warn',
-          message: `Muse binary not found: ${bin} (optional — only needed for Muse provider)`,
+          message: `Muse binary not found: ${bin} (optional, only needed for the Muse provider)`,
           fix: 'Install Muse Code CLI and ensure `muse` is on PATH, or set MUSE_MOCK=1',
         });
       } else {
         resolve({
           name: 'Muse binary',
           status: 'warn',
-          message: `Muse error: ${err.message} (optional — only needed for Muse provider)`,
+          message: `Muse error: ${err.message} (optional, only needed for the Muse provider)`,
           fix: 'Check Muse installation, or set MUSE_MOCK=1',
         });
       }
@@ -302,7 +345,7 @@ export async function checkMuseBinary(): Promise<CheckResult> {
         resolve({
           name: 'Muse binary',
           status: 'warn',
-          message: `Muse exited with code ${code} (optional — only needed for Muse provider)`,
+          message: `Muse exited with code ${code} (optional, only needed for the Muse provider)`,
           fix: 'Muse may need authentication or setup',
         });
       }
@@ -312,7 +355,7 @@ export async function checkMuseBinary(): Promise<CheckResult> {
 
 /**
  * Check if the configured Codex model may require API access.
- * This is advisory only — Wingman does not recommend specific fallback models.
+ * This is advisory only. Wingman does not recommend specific fallback models.
  * Users should use their session's model, Codex defaults, or explicit overrides.
  */
 export async function checkCodexModel(): Promise<CheckResult> {
@@ -410,7 +453,7 @@ export async function checkHostIdentity(): Promise<CheckResult> {
   return {
     name: 'Host identity',
     status: 'pass',
-    message: `hostId="${hostId}", hostName="${hostName}" (from hostname — set WINGMAN_HOST_ID/NAME for multi-host)`,
+    message: `hostId="${hostId}", hostName="${hostName}" (from hostname; set WINGMAN_HOST_ID and WINGMAN_HOST_NAME for multi-host)`,
   };
 }
 
@@ -419,6 +462,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
     checkNodeVersion(),
     checkConfig(),
     checkTokenSecurity(),
+    checkHeartbeat(),
     checkPort(),
     checkClaudeSdk(),
     checkCodexBinary(),
@@ -505,7 +549,7 @@ const isMain =
 
 if (isMain) {
   main().catch((err) => {
-    console.error(err);
+    console.error(err instanceof Error ? err.message : err);
     process.exit(1);
   });
 }

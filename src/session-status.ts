@@ -1,5 +1,31 @@
 export type SessionRunState = 'idle' | 'working' | 'awaiting_approval' | 'errored';
 
+/** How long an approval can sit before list_sessions and get_status flag it. */
+export const APPROVAL_STALL_MS_DEFAULT = 10 * 60 * 1000;
+
+export function resolveApprovalStallMs(explicit?: number): number {
+  if (explicit !== undefined && Number.isInteger(explicit) && explicit > 0) return explicit;
+  const env = process.env.WINGMAN_APPROVAL_STALL_MS?.trim();
+  if (env && /^\d+$/.test(env) && Number(env) > 0) return Number(env);
+  return APPROVAL_STALL_MS_DEFAULT;
+}
+
+export function approvalStallFields(
+  approvals: Array<{ requestedAt: number }>,
+  now = Date.now(),
+  thresholdMs = resolveApprovalStallMs(),
+): { pendingApprovalAgeMs: number | null; stalled_on_approval: boolean } {
+  if (approvals.length === 0) {
+    return { pendingApprovalAgeMs: null, stalled_on_approval: false };
+  }
+  const oldest = Math.min(...approvals.map((item) => item.requestedAt));
+  const pendingApprovalAgeMs = Math.max(0, now - oldest);
+  return {
+    pendingApprovalAgeMs,
+    stalled_on_approval: pendingApprovalAgeMs >= thresholdMs,
+  };
+}
+
 export function deriveSessionState(input: {
   running: boolean;
   approvalCount: number;
