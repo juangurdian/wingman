@@ -1,7 +1,7 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 /**
  * Streamable HTTP MCP server with bearer auth.
- * Binds to 127.0.0.1 by default â€” expose via cloudflared/tailscale for Grok Bot.
+ * Binds to 127.0.0.1 by default. Expose it with Tailscale Funnel or cloudflared for a remote host.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -39,8 +39,11 @@ import {
   resolveToken,
   mcpUrl,
   isHealthzAuthFree,
+  safeErrorText,
   type BridgeConfig,
 } from '../config.js';
+import { allowedHostsForListen, mcpExpressOptions } from '../bind.js';
+import { loadTunnelState } from '../tunnel.js';
 import { buildBridgeStatus, writeHeartbeat } from '../reachability.js';
 
 export interface StartServerOptions {
@@ -89,10 +92,11 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
   const heartbeatTimer = setInterval(beat, 15_000);
   if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
 
-  // createMcpExpressApp's `host` only controls DNS-rebinding Host checks.
-  // Keep listen() on loopback (`host` below), but pass 0.0.0.0 here so
-  // Cloudflare/Tailscale tunnel Hostnames are accepted. Bearer auth is the gate.
-  const app = createMcpExpressApp({ host: '0.0.0.0' });
+  // Listen stays on `host` (127.0.0.1 unless opted into 0.0.0.0).
+  // allowedHosts turns on the SDK Host check and includes the Funnel or tunnel name
+  // so a remote client is accepted without opening the check to every hostname.
+  const allowedHosts = allowedHostsForListen(host, loadTunnelState()?.lastPublicUrl);
+  const app = createMcpExpressApp(mcpExpressOptions(host, allowedHosts));
 
   // Health endpoint - auth requirement is configurable via WINGMAN_HEALTHZ_AUTH_FREE
   // Default: requires auth. Set WINGMAN_HEALTHZ_AUTH_FREE=1 for monitors/tunnels that need auth-free access.
@@ -122,7 +126,8 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
         description:
           'List coding-agent sessions. Optional provider filter: codex | claude. ' +
           'Optional state: live, past, or all. live means a Claude registry pid is still running. ' +
-          'Sessions are sorted with live ones first.',
+          'Sessions are sorted with live ones first. ' +
+          'Each row includes pendingApprovalAgeMs and stalled_on_approval when an approval has been waiting longer than WINGMAN_APPROVAL_STALL_MS (default 10 minutes).',
         inputSchema: ListSessionsSchema.shape,
       },
       async (args) => handlers.list_sessions(ListSessionsSchema.parse(args)),
@@ -144,7 +149,9 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
           'Send a user message into an existing session. Codex starts a turn. ' +
           'Claude resumes that session id in a headless query (fork_session true copies it instead) ' +
           'with a configurable turn budget, permission mode, tool allow and deny lists, and model. ' +
-          'Omit model to inherit the Claude session model. A live interactive session is delivered on its inbox instead of a headless resume. ' +
+          'Omit model to inherit the Claude session model. A live interactive session is delivered on its inbox. ' +
+          'If the session stays idle, status is queued_not_started: some Claude Code builds wait for Enter and the wire protocol has no submit line. ' +
+          'inbox_fallback "headless" resumes headless only when the session is still idle after the wait. A mid-turn session is never resumed headless. ' +
           'A second send_message while a Wingman turn is active is rejected; use steer or interrupt. ' +
           'A headless Claude turn is not shown in an already-open interactive terminal.',
         inputSchema: SendMessageSchema.shape,
@@ -252,6 +259,8 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
           'HTTP 502 or 504 means server_down (the tunnel is up and Wingman is not listening). ' +
           'fetch failed, ENOTFOUND, or a timeout with no HTTP status means host_offline. ' +
           'HTTP 401 or 403 means the server is up and the bearer token was rejected. ' +
+          'Includes heartbeatAgeMs and heartbeatStale. A beat older than 5 minutes means this process is not writing heartbeat.json. ' +
+          'That does not by itself mean the tunnel is down. ' +
           'This tool cannot answer after the process exits. On the machine, run wingman-tunnel diagnose.',
         inputSchema: GetBridgeStatusSchema.shape,
       },
@@ -262,7 +271,8 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
       'get_status',
       {
         description:
-          'Per session: idle, working, awaiting_approval, or errored, plus last activity, pending prompt, model, git HEAD, dirty files, and process RSS.',
+          'Per session: idle, working, awaiting_approval, or errored, plus last activity, pending prompt, model, git HEAD, dirty files, and process RSS. ' +
+          'Includes pendingApprovalAgeMs and stalled_on_approval when an approval is older than WINGMAN_APPROVAL_STALL_MS (default 10 minutes).',
         inputSchema: GetStatusSchema.shape,
       },
       async (args) => handlers.get_status(GetStatusSchema.parse(args)),
@@ -442,7 +452,7 @@ if (isMain) {
     port: resolvePort(cfg?.port),
     host: resolveHost(),
   }).catch((err) => {
-    console.error(err);
+    console.error(safeErrorText(err, [resolveToken(), loadConfig()?.token]));
     process.exit(1);
   });
 }

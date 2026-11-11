@@ -1,6 +1,6 @@
 # Wingman
 
-**Your coding agent's wingman** — a TypeScript MCP bridge + pair CLI so Grok Bot, Cursor, Muse Code (and other MCP hosts) can talk to live Codex and Claude Code sessions on your machine while you still see the session.
+**Your coding agent's wingman.** A TypeScript MCP bridge and pair CLI so Grok Bot, Cursor, Muse Code, and other MCP hosts can talk to live Codex and Claude Code sessions on your machine while you still see the session.
 
 Dual-provider: Codex (app-server) + Claude Code (Agent SDK).
 
@@ -15,7 +15,7 @@ See **[ROADMAP.md](ROADMAP.md)** for positioning, backlog, and non-goals.
 
 ## Why Wingman?
 
-Cloud assistants are great copilots — until they need to *touch* the session you're already in. Wingman sits on your machine, pairs with a one-command CLI, and exposes a small MCP surface so a remote host can list threads, read transcripts, send messages, and interrupt turns — without hijacking your TTY or pretending to be the agent UI.
+Cloud assistants are great copilots until they need to *touch* the session you're already in. Wingman sits on your machine, pairs with a one-command CLI, and exposes a small MCP surface so a remote host can list threads, read transcripts, send messages, and interrupt turns, without hijacking your TTY or pretending to be the agent UI.
 
 Think of it as a radio link between the bot in the cloud and the agent on your desk. You're still flying; Wingman just rides shotgun.
 
@@ -38,33 +38,38 @@ Set `CODEX_MOCK=1` or `CLAUDE_MOCK=1` for mock mode (no real agent required).
 
 ### After pairing
 
-1. **Pair** — `wingman-pair` generates a bearer token, writes `~/.wingman/config.json`, and starts MCP on `127.0.0.1:3847/mcp`.
-2. **Tunnel** — remote hosts cannot reach localhost. Pick a tunnel option (ranked by durability):
+1. **Pair.** `wingman-pair` generates a bearer token, writes `~/.wingman/config.json`, and starts MCP on `127.0.0.1:3847/mcp`. The token is printed as a short prefix (`abcd…`). Pass `--show-token` once, while you paste it into the connector.
+2. **Tunnel.** Remote hosts cannot reach localhost. The stable public URL is Tailscale Funnel:
 
    ```bash
-   # Option 1: Tailscale Serve (stable, loopback to your network)
+   wingman-tunnel tailscale
+   # Windows, when tailscale is not on PATH:
+   wingman-tunnel tailscale --bin "C:\Program Files\Tailscale\tailscale.exe"
+   ```
+
+   That runs `tailscale funnel --bg 3847`, reads `Self.DNSName` from `tailscale status --json`, and prints `https://<name>/mcp`. `--bg` is stored by tailscaled, so the URL stays put across reboots as long as Tailscale starts. Other options, ranked for durability:
+
+   ```bash
+   # Tailscale Serve (stable, only your tailnet)
    tailscale serve --bg 3847
 
-   # Option 2: Tailscale Funnel (stable, public URL)
-   tailscale funnel 3847
-
-   # Option 3: Cloudflare named tunnel (stable, custom domain)
+   # Cloudflare named tunnel (stable, custom domain)
    # Run 'wingman-tunnel' for one-time setup instructions
    cloudflared tunnel run wingman
 
-   # Option 4: Cloudflare quick tunnel (ephemeral, for demos)
+   # Cloudflare quick tunnel (ephemeral, for demos). The hostname changes every start.
    cloudflared tunnel --url http://127.0.0.1:3847
    ```
 
-   For detailed setup help, run `wingman-tunnel` (or `npm run tunnel`).
+   `wingman-tunnel diagnose` probes local `/healthz`, the heartbeat, and Funnel. If Funnel is not approved, the report includes `Funnel not enabled on tailnet` and the approval link Tailscale prints.
 
 3. **Add MCP server** (Grok Bot / Cursor `AddMcpServer`):
 
    | Field | Value |
    |-------|--------|
    | **name** | `wingman` |
-   | **url** | `https://YOUR-TUNNEL-HOST/mcp` |
-   | **Authorization** | `Bearer <token printed by pair>` |
+   | **url** | `https://<magic-dns-name>/mcp` |
+   | **Authorization** | `Bearer <token from ~/.wingman/config.json>` |
 
 Then ask the host to call `list_sessions` → `read_transcript` / `send_message` / `interrupt`.
 
@@ -80,17 +85,17 @@ Different MCP hosts have different configuration methods. See the detailed guide
 | **Claude Desktop** | ⚠️ Limited | [docs/hosts/claude-desktop.md](docs/hosts/claude-desktop.md) |
 | **Other clients** | Varies | [docs/hosts/generic-mcp-client.md](docs/hosts/generic-mcp-client.md) |
 
-> **Note**: Wingman is a remote HTTP MCP server. Hosts that support HTTP + bearer auth work natively. Stdio-only hosts (like Claude Desktop) require a bridge — see the Claude Desktop guide for workarounds.
+> **Note**: Wingman is a remote HTTP MCP server. Hosts that support HTTP + bearer auth work natively. Stdio-only hosts (like Claude Desktop) require a bridge. See the Claude Desktop guide for workarounds.
 
 ### Real provider modes
 
-**Codex** — Requires `codex` on `PATH`. Wingman speaks **Codex app-server** JSON-RPC (`codex app-server` over stdio).
+**Codex.** Requires `codex` on `PATH`. Wingman speaks **Codex app-server** JSON-RPC (`codex app-server` over stdio).
 
 ```bash
 npm run pair   # unset CODEX_MOCK
 ```
 
-**Claude Code** — Uses the `@anthropic-ai/claude-agent-sdk`. Sessions are created and resumed through the SDK.
+**Claude Code.** Uses the `@anthropic-ai/claude-agent-sdk`. Sessions are created and resumed through the SDK.
 
 ```bash
 npm run pair   # unset CLAUDE_MOCK
@@ -106,21 +111,57 @@ Docs: [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [Claude A
 - Bridge Grok Bot ↔ local Codex threads via app-server once tunneled
 - Bridge Grok Bot ↔ local Claude Code sessions via Agent SDK once tunneled
 - **Discover existing Claude sessions** via SDK's `listSessions()` (sessions you created via `claude` CLI or Claude Code IDE)
-- Resume discovered sessions by ID — the SDK reads session state from `~/.claude/projects/`
+- Resume discovered sessions by ID. The SDK reads session state from `~/.claude/projects/`
 - Send messages to sessions asynchronously (returns `accepted` quickly; turn runs in background)
 - Check session status (idle vs running) via `get_session` or `list_sessions`
 - Bearer-protect the MCP HTTP endpoint
 - Create / list / read / message / interrupt sessions (real or mock) for both providers
-- Keep you in the loop — the session stays visible on your machine
+- Keep you in the loop. The session stays visible on your machine
 
 **Can't (scope / v1 limits)**
 
 - Reach the bridge from a remote host without a **tunnel** (binds loopback only)
-- **Type into an open TTY** — SDK resume ≠ injecting keystrokes into a Claude/Codex terminal you're watching; Wingman calls SDK APIs that operate on session state files, not terminal processes
-- Hijack arbitrary Claude / Codex TTYs you already have open elsewhere — Wingman manages sessions via SDK, not by attaching to interactive shells
+- **Type into an open TTY.** SDK resume is not the same as injecting keystrokes into a Claude or Codex terminal you're watching. Wingman calls SDK APIs that operate on session state files, not terminal processes.
+- Hijack arbitrary Claude or Codex TTYs you already have open elsewhere. Wingman manages sessions via SDK, not by attaching to interactive shells.
 - Interrupt a discovered session reliably unless Wingman started the current turn (no active query handle)
 - Auto-approve sandbox prompts (approvals still belong to the local agent client)
 - Use legacy `codex mcp-server` (removed / not used here)
+
+## Staying up, and keeping the token quiet
+
+The listen address defaults to `127.0.0.1`. DNS rebinding protection stays on. The Host allowlist is loopback, plus any of these:
+
+- `WINGMAN_TUNNEL_HOST`
+- `WINGMAN_ALLOWED_HOSTS` (comma-separated hostnames)
+- `tunnelHost` in `~/.wingman/config.json` (set by `wingman-tunnel tailscale`)
+- the hostname stored in `~/.wingman/tunnel-state.json`
+
+To listen on every interface, run `wingman-pair --host 0.0.0.0` or set `WINGMAN_HOST=0.0.0.0`. Protection stays on. Requests whose Host header is not on the allowlist are rejected. Add that hostname before you expect them to work.
+
+Rotate a token without starting the server:
+
+```bash
+wingman-pair --rotate-token
+wingman-token rotate          # same thing
+wingman-token rotate --show-token
+```
+
+The new token is written to `~/.wingman/config.json`. A process that is already running keeps the old token until it restarts. `WINGMAN_TOKEN` in the environment wins over the file. Pair, doctor, diagnose, and error text show a short prefix unless you pass `--show-token`. A token that starts with `smoke-`, `test-`, or another obvious fixture is a warning. Rotate it before the bridge is reachable.
+
+On Windows, install a logon task that reuses the token and can bring the tunnel back:
+
+```bash
+wingman-task install --tunnel tailscale --tailscale-bin "C:\Program Files\Tailscale\tailscale.exe"
+wingman-task install --tunnel quick
+```
+
+Funnel `--bg` persists in tailscaled, so the task checks that it is active and runs `tailscale funnel --bg` only when this port is not published. The quick tunnel option starts cloudflared. That hostname changes every start.
+
+`~/.wingman/heartbeat.json` is rewritten about every 15 seconds while this process is running. `get_bridge_status` and `wingman-doctor` set a warning when the file is missing or older than 5 minutes. A stale beat means Wingman is stopped, hung, or the machine slept and nothing wrote a new beat. It does not by itself mean the tunnel is down. After a reboot, a stale or missing file means the scheduled task did not bring the process back.
+
+Child processes are spawned with `shell: false`. On Windows, a `.cmd` shim such as `claude.cmd` is resolved on `PATH` and spawned directly, so Node does not emit DEP0190.
+
+Details: [Operations](docs/operations.md) and [Security](SECURITY.md).
 
 ## Architecture
 
@@ -149,10 +190,10 @@ flowchart LR
 
 | Tool | Args | Notes |
 |------|------|--------|
-| `list_sessions` | `provider?`: `codex` \| `claude`, `state?`: `live` \| `past` \| `all` | Lists sessions. `state` is Claude inbox liveness (a running registry pid). Live sessions sort first. |
+| `list_sessions` | `provider?`: `codex` \| `claude`, `state?`: `live` \| `past` \| `all` | Lists sessions. `state` is Claude inbox liveness (a running registry pid). Live sessions sort first. Each row includes `pendingApprovalAgeMs` and `stalled_on_approval` (default threshold 10 minutes, `WINGMAN_APPROVAL_STALL_MS`). |
 | `get_session` | `provider`, `session_id` | Get detailed session info including status (`idle` / `running`), tags, and host identity |
 | `read_transcript` | `provider`, `session_id`, `limit?` | Recent messages (newest at end) |
-| `send_message` | `provider`, `session_id`, `text`, `model?`, `max_turns?`, `permission_mode?`, `allowed_tools?`, `disallowed_tools?`, `fork_session?`, `approval_timeout_ms?`, `force?` | Codex: `turn/start` (warns if another client has the thread loaded unless `force`). Claude live sessions are delivered on the inbox. Otherwise a headless resume. A second send during an active Wingman turn is rejected. |
+| `send_message` | `provider`, `session_id`, `text`, `model?`, `max_turns?`, `permission_mode?`, `allowed_tools?`, `disallowed_tools?`, `fork_session?`, `approval_timeout_ms?`, `force?`, `inbox_fallback?`, `inbox_pickup_ms?` | Codex: `turn/start` (warns if another client has the thread loaded unless `force`). Claude live sessions are written to the inbox. If the session stays idle, status is `queued_not_started`. `inbox_fallback: "headless"` resumes headless only after that wait, and only while the session is idle. A second send during an active Wingman turn is rejected. |
 | `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`. Claude: aborts the Wingman-owned headless query (`AbortController` and `Query.interrupt()`). |
 | `create_session` | `provider`, `cwd?`, `prompt?`, `name?`, `tags?`, `model?`, `max_turns?`, `permission_mode?`, `allowed_tools?`, `disallowed_tools?`, `approval_timeout_ms?` | Codex: `thread/start` with optional model override. Claude: new headless session. Model is optional for both. |
 | `wait_turn` | `provider`, `session_id`, `timeout_ms?`, `poll_interval_ms?` | Wait for a Codex or Claude turn to complete, fail, or time out. Returns early while a permission prompt is waiting. |
@@ -161,10 +202,10 @@ flowchart LR
 | `resolve_approval` | `provider`, `session_id`, `approval_id`, `decision` | Accept, accept for the session, decline, or cancel a Codex or Claude approval. |
 | `set_session_meta` | `provider`, `session_id`, `name?`, `tags?` | Set session name/tags for easier discovery (Wingman-owned sessions) |
 | `export_transcript` | `provider`, `session_id`, `format`, `limit?` | Export transcript as `markdown` \| `json`; returns content + writes to `~/.wingman/exports/` |
-| `get_bridge_status` | (none) | This process is up: pid, uptime, and how to read a later failure. See [Operations](docs/operations.md). |
+| `get_bridge_status` | (none) | This process is up: pid, uptime, and how to read a later failure. `heartbeatStale` is true when `heartbeat.json` is missing or older than 5 minutes. See [Operations](docs/operations.md). |
 | `list_claude_live_sessions` | (none) | Interactive Claude sessions from the inbox registry and `claude agents`. `live` is true only while the pid is running. |
 | `send_to_claude_session` | `target`, `text` | Send text to a live interactive session by id, name, or pid. Past sessions are refused. |
-| `get_status` | `provider`, `session_id`, `caller?` | `idle`, `working`, `awaiting_approval`, or `errored`, plus last activity, pending prompt, model, git HEAD, dirty files, and RSS |
+| `get_status` | `provider`, `session_id`, `caller?` | `idle`, `working`, `awaiting_approval`, or `errored`, plus last activity, pending prompt, model, git HEAD, dirty files, RSS, `pendingApprovalAgeMs`, and `stalled_on_approval` |
 | `start_codex_exec` | `prompt`, `cwd`, `sandbox?`, `model?`, `resume_session_id?` | Headless `codex exec` (CLI 0.166). No `--full-auto`. Prompt goes to stdin. Returns a run id. |
 | `run_headless` | `prompt`, `cwd?`, `session_id?`, `max_turns?`, `permission_mode?`, `model?` | Long Claude run. Prompt is an SDK string, not a PowerShell command. Returns a run id. |
 | `get_run` | `run_id`, `tail_lines?` | Poll a headless run: status, exit code, output tail, RSS |
@@ -182,7 +223,7 @@ For **Codex sessions**, `create_session` calls `thread/start` and returns `{ ses
 
 ### Codex model override
 
-By default, Wingman does **not** override the Codex model — it uses whatever is configured in `~/.codex/config.toml` or Codex's built-in defaults. Override only when you intentionally need a different model for Wingman-created sessions:
+By default, Wingman does **not** override the Codex model. It uses whatever is configured in `~/.codex/config.toml` or Codex's built-in defaults. Override only when you intentionally need a different model for Wingman-created sessions:
 
 **Via environment variable**:
 ```bash
@@ -201,7 +242,21 @@ npm run pair
 
 ### send_message behavior
 
-For a **live interactive Claude session** (registry file plus a running pid), `send_message` delivers the text on that session's inbox socket or Windows named pipe and returns `{ status: "delivered_via_inbox", attachedToTerminal: true }`. It does not start a headless resume. If the inbox rejects the message, Wingman falls back to the headless path below.
+For a **live interactive Claude session** (registry file plus a running pid), `send_message` writes the text to that session's inbox socket or Windows named pipe. The wire format is an auth line plus a user message. It has no extra submit line.
+
+What comes back depends on what the interactive session does during `inbox_pickup_ms` (default 5000, or `WINGMAN_INBOX_PICKUP_MS`):
+
+| What Wingman sees | `status` | Headless resume |
+|---|---|---|
+| Session was idle and then left idle (busy, running, or working) | `delivered_via_inbox`, `inboxState: "started"` | No |
+| Session was already mid-turn | `delivered_via_inbox`, `inboxState: "queued_mid_turn"` | No. The text is for delivery between tool calls. |
+| Session stayed idle | `queued_not_started` | Only if `inbox_fallback` is `"headless"` (or `WINGMAN_INBOX_FALLBACK=headless`). The composer may still hold the text, so pressing Enter there can run it a second time. |
+| Session phase was not visible | `queued_not_started` | No. Wingman will not guess that the session is idle. |
+| Write failed while the session is mid-turn or the phase is unknown | `inbox_not_delivered` | No |
+
+Some Claude Code builds, including Windows desktop builds in the 2.1.227 line, accept the socket write and only place the text in the composer until a person presses Enter. That is why a successful write is not reported as a started turn unless the session actually leaves idle. `send_to_claude_session` uses the same watch and the same `inboxState` values. It does not start a headless resume.
+
+If the inbox write fails and the session is idle, Wingman falls back to the headless path below. A headless Agent SDK query does not appear in the open terminal.
 
 For **other Claude sessions**, `send_message` returns immediately with `{ status: "accepted", turnId, resumeMode, maxTurns, permissionMode, model?, modelSource, attachedToTerminal: false, note }` while the SDK query runs in the background. Use `wait_turn`, `get_session`, or `read_transcript` to observe progress. This keeps the MCP HTTP call from waiting on the model.
 
@@ -369,13 +424,13 @@ See [docs/hosts/multi-host.md](docs/hosts/multi-host.md) for running Wingman on 
 
 Wingman tracks sessions it creates in a local registry (`~/.wingman/claude-sessions.json` for Claude). This ensures:
 
-1. **Isolation** — Only sessions started through Wingman's `create_session` are visible to MCP clients by default
-2. **No TTY hijack** — We don't scan for or attach to Claude/Codex processes you started elsewhere
-3. **Resumable** — Sessions can be resumed by ID across Wingman restarts
+1. **Isolation.** Only sessions started through Wingman's `create_session` are visible to MCP clients by default
+2. **No TTY hijack.** We don't scan for or attach to Claude/Codex processes you started elsewhere
+3. **Resumable.** Sessions can be resumed by ID across Wingman restarts
 
 ### Claude session discovery
 
-Wingman can also **discover existing Claude Code sessions** via the Agent SDK's `listSessions()`. This allows `list_sessions` to find sessions the user created via `claude` CLI or Claude Code IDE — not only sessions created through Wingman.
+Wingman can also **discover existing Claude Code sessions** via the Agent SDK's `listSessions()`. This allows `list_sessions` to find sessions the user created via `claude` CLI or Claude Code IDE, not only sessions created through Wingman.
 
 **How discovery works:**
 1. `list_sessions` merges Wingman's registry with sessions discovered via SDK
@@ -501,9 +556,9 @@ See [SECURITY.md](SECURITY.md) for security policy, bearer token handling, and b
 
 ## Community
 
-Open-source. MVP — Codex and Claude providers work (mock + real); APIs may shift before 1.0.
+Open-source. MVP: Codex and Claude providers work (mock and real). APIs may shift before 1.0.
 
-Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Ideas for tunnel helpers, provider improvements, and other MCP-host guides are especially useful.
+Issues and PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Ideas for tunnel helpers, provider improvements, and other MCP-host guides are especially useful.
 
 If Wingman helped you pair a session, star the repo or open an issue with what you tried. Good wingmen share the checklist.
 

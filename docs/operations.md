@@ -24,11 +24,20 @@ wingman-tunnel diagnose --url https://YOUR-TUNNEL-HOST
 wingman-tunnel classify --status 530 --body "error code: 1033"
 ```
 
-`diagnose` probes local `/healthz`, reads `~/.wingman/heartbeat.json`, and optionally probes the public URL.
+`diagnose` probes local `/healthz`, reads `~/.wingman/heartbeat.json`, reports Tailscale Funnel status, and optionally probes the public URL.
 
 - Local health is OK and the public URL is 1033: `tunnel_down`. Restart cloudflared or Tailscale. Wingman did not crash.
 - Local health fails and the public URL is 502: `server_down`. The tunnel is up and Wingman crashed.
 - Local health fails and the public URL is 1033: both are down. A remote client only sees 1033, which hides the crash. The heartbeat age says when Wingman last wrote a beat (every 15 seconds while it is up).
+- `heartbeatStale` is true when the file is missing or older than 5 minutes. That means the Wingman process is not writing beats. It does not by itself mean the tunnel is down. After a reboot, a stale file means nothing restarted Wingman.
+
+Funnel status is included in the same JSON. `Funnel not enabled on tailnet` means the tailnet has not approved Funnel. The report includes the approval link Tailscale printed (`https://login.tailscale.com/...`). `wingman-tunnel tailscale` runs `tailscale funnel --bg <port>` when this port is not already published, reads `Self.DNSName` from `tailscale status --json`, and prints `https://<name>/mcp`. On Windows, pass `--bin` or set `WINGMAN_TAILSCALE_PATH` to `tailscale.exe`. `--bg` is stored by tailscaled, so the URL survives a reboot when the Tailscale service starts.
+
+```bash
+wingman-tunnel tailscale
+wingman-tunnel tailscale --bin "C:\Program Files\Tailscale\tailscale.exe"
+wingman-tunnel diagnose --url https://YOUR-TUNNEL-HOST
+```
 
 `/status` returns the same JSON as `/healthz`. Both follow `WINGMAN_HEALTHZ_AUTH_FREE`.
 
@@ -38,6 +47,8 @@ wingman-tunnel classify --status 530 --body "error code: 1033"
 
 ```bash
 wingman-task install
+wingman-task install --tunnel tailscale --tailscale-bin "C:\Program Files\Tailscale\tailscale.exe"
+wingman-task install --tunnel quick
 wingman-task status
 wingman-task uninstall
 wingman-task print-xml
@@ -49,8 +60,18 @@ The task:
 - Restarts one minute after a crash, up to 999 times.
 - Has no execution time limit, so a long bridge is not killed by Task Scheduler.
 - Starts `node` with `pair.js` and does **not** pass `--new-token`.
+- With `--tunnel tailscale`, also passes `--ensure-tunnel tailscale`. Funnel `--bg` persists in tailscaled, so the task checks that the funnel is active and republishes the port only when it is not.
+- With `--tunnel quick`, starts a Cloudflare quick tunnel. The trycloudflare.com hostname changes every start. Use it for a demo, not for a connector you want to keep.
 
-The bearer token is created once, in `%USERPROFILE%\.wingman\config.json`, and reused on every start. A crash restart does not rotate it.
+The bearer token is created once, in `%USERPROFILE%\.wingman\config.json`, and reused on every start. A crash restart does not rotate it. Rotate on purpose with `wingman-pair --rotate-token` or `wingman-token rotate`, then restart the task so it reads the new file. Output is masked unless you pass `--show-token`. `WINGMAN_TOKEN` overrides the file.
+
+The default listen address is `127.0.0.1`. DNS rebinding protection is on, and the allowlist includes the Funnel or tunnel hostname (`WINGMAN_TUNNEL_HOST`, `WINGMAN_ALLOWED_HOSTS`, or `tunnelHost` in the config file). Opt into every interface with `--host 0.0.0.0` or `WINGMAN_HOST=0.0.0.0`. Protection stays on. Add the Host header clients will send, or those requests are rejected.
+
+`get_bridge_status` includes `heartbeatAgeMs`, `heartbeatStale`, and `heartbeatWarning`. The file is rewritten about every 15 seconds. Older than 5 minutes means this process is not writing beats.
+
+`list_sessions` and `get_status` include `pendingApprovalAgeMs` and `stalled_on_approval`. The flag is true when the oldest pending approval is at least 10 minutes old. `WINGMAN_APPROVAL_STALL_MS` changes the threshold.
+
+Commands that spawn `claude`, `tailscale`, or `cloudflared` use `shell: false`. On Windows the `.cmd` or `.exe` path is resolved first. That avoids Node's DEP0190 warning, which is raised when arguments are passed with `shell: true`.
 
 On Linux or macOS the command writes the XML and prints the `schtasks` line. It does not register a task there.
 

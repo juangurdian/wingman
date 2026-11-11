@@ -7,18 +7,27 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { spawn, spawnSync } from 'node:child_process';
-import { homedir, platform } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { platform } from 'node:os';
 import { join } from 'node:path';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { configDir, loadConfig, resolvePort, resolveHost } from './config.js';
+import { configDir, loadConfig, resolvePort, resolveHost, safeErrorText, saveConfig } from './config.js';
 import {
   classifyRemoteFailure,
+  describeHeartbeat,
   diagnoseLocal,
   heartbeatAgeMs,
   readHeartbeat,
 } from './reachability.js';
+import {
+  executeFunnel,
+  funnelConnectorUrl,
+  readFunnelDiagnosis,
+  resolveTailscaleBin,
+  spawnCommandRunner,
+  type FunnelDiagnosis,
+} from './tailscale.js';
 
 export interface TunnelTool {
   name: string;
@@ -28,7 +37,7 @@ export interface TunnelTool {
   recommendation: TunnelRecommendation;
 }
 
-export type TunnelRecommendation = 'tailscale-serve' | 'named-cloudflare' | 'quick-tunnel';
+export type TunnelRecommendation = 'tailscale-serve' | 'tailscale-funnel' | 'named-cloudflare' | 'quick-tunnel';
 
 export interface TunnelState {
   lastPublicUrl?: string;
@@ -319,7 +328,7 @@ ${colors.bold}After starting a tunnel:${colors.reset}
      • URL: <tunnel-url>/mcp
      • Authorization: Bearer <your-token>
 
-${colors.bold}Token location:${colors.reset} ${config ? `${colors.cyan}~/.wingman/config.json${colors.reset}` : `${colors.yellow}Not configured yet — run wingman-pair first${colors.reset}`}
+${colors.bold}Token location:${colors.reset} ${config ? `${colors.cyan}~/.wingman/config.json${colors.reset}` : `${colors.yellow}Not configured yet. Run wingman-pair first.${colors.reset}`}
 
 ${colors.bold}Security:${colors.reset} See SECURITY.md for token rotation and best practices.
 `);
@@ -375,6 +384,18 @@ export function recordTunnelUrl(url: string, tunnelType?: TunnelRecommendation):
   console.log(`[wingman] Tunnel URL recorded: ${url}`);
 }
 
+/** Save the MagicDNS name so the next process allowlists it, and record the connector URL. */
+export function rememberFunnelHost(dnsName: string): string {
+  const host = dnsName.trim().replace(/\.$/, '');
+  const url = funnelConnectorUrl(host);
+  recordTunnelUrl(url, 'tailscale-funnel');
+  const cfg = loadConfig();
+  if (cfg && cfg.tunnelHost !== host) {
+    saveConfig({ ...cfg, tunnelHost: host });
+  }
+  return url;
+}
+
 export function probeHttp(url: string, timeoutMs = 3000): Promise<{ status?: number; body?: string; error?: string }> {
   return new Promise((resolve) => {
     let parsed: URL;
@@ -410,11 +431,15 @@ export function probeHttp(url: string, timeoutMs = 3000): Promise<{ status?: num
   });
 }
 
-export async function diagnoseTunnel(opts: { publicUrl?: string; localUrl: string }): Promise<unknown> {
+export async function diagnoseTunnel(opts: {
+  publicUrl?: string;
+  localUrl: string;
+  funnel?: FunnelDiagnosis;
+}): Promise<unknown> {
   const local = await probeHttp(opts.localUrl);
   const remote = opts.publicUrl ? await probeHttp(opts.publicUrl) : undefined;
   const beat = readHeartbeat();
-  return diagnoseLocal({
+  const report = diagnoseLocal({
     localHttpStatus: local.status,
     localError: local.error,
     heartbeatAgeMs: heartbeatAgeMs(beat),
@@ -422,6 +447,8 @@ export async function diagnoseTunnel(opts: { publicUrl?: string; localUrl: strin
     publicError: remote?.error,
     publicBody: remote?.body,
   });
+  const heartbeat = describeHeartbeat(report.heartbeatAgeMs ?? null);
+  return { ...report, ...heartbeat, funnel: opts.funnel };
 }
 
 async function main(): Promise<void> {
@@ -434,8 +461,15 @@ Options:
   --help, -h          Show this help message
   --record-url URL    Record a tunnel URL for future reference
   --show-state        Show saved tunnel state
-  diagnose            Probe local Wingman and an optional public URL
+  diagnose            Probe local Wingman, Funnel status, and an optional public URL
   classify            Classify a remote error without a live server
+  tailscale           Run tailscale funnel --bg and print the stable https URL
+  --tailscale         Same as the tailscale subcommand
+
+tailscale options:
+  --port PORT         Local port to publish (default from config, else 3847)
+  --bin PATH          Path to tailscale, or tailscale.exe on Windows
+                      Also read from WINGMAN_TAILSCALE_PATH
 
 diagnose options:
   --url URL           Public tunnel URL to probe (healthz path is added if missing)
@@ -450,6 +484,29 @@ Detects available tunnel tools and prints recommended commands.
 A failed MCP call cannot ask Wingman what broke. Use diagnose on the machine,
 or classify the HTTP error on the client.
 `);
+    return;
+  }
+
+  if (args[0] === 'tailscale' || args.includes('--tailscale')) {
+    const config = loadConfig();
+    const portIdx = args.indexOf('--port');
+    const binIdx = args.indexOf('--bin');
+    const port = portIdx >= 0 ? Number(args[portIdx + 1]) : (config?.port ?? resolvePort());
+    const bin = resolveTailscaleBin({
+      explicit: binIdx >= 0 ? args[binIdx + 1] : undefined,
+      env: process.env.WINGMAN_TAILSCALE_PATH,
+      configBin: config?.tailscaleBin,
+    });
+    const diagnosis = executeFunnel({ port, bin, run: spawnCommandRunner() });
+    if (diagnosis.dnsName && (diagnosis.active || diagnosis.started)) {
+      try {
+        diagnosis.connectorUrl = rememberFunnelHost(diagnosis.dnsName);
+      } catch (err) {
+        diagnosis.summary += ` (could not save the hostname: ${err instanceof Error ? err.message : err})`;
+      }
+    }
+    console.log(JSON.stringify({ ...diagnosis, port, bin }, null, 2));
+    if (!diagnosis.active && !diagnosis.started) process.exitCode = 1;
     return;
   }
 
@@ -477,7 +534,12 @@ or classify the HTTP error on the client.
       publicUrl = `${publicUrl.replace(/\/$/, '')}/healthz`;
     }
     const localUrl = localIdx >= 0 ? args[localIdx + 1] : `http://127.0.0.1:${port}/healthz`;
-    const report = await diagnoseTunnel({ publicUrl, localUrl: localUrl! });
+    const bin = resolveTailscaleBin({
+      env: process.env.WINGMAN_TAILSCALE_PATH,
+      configBin: config?.tailscaleBin,
+    });
+    const funnel = readFunnelDiagnosis({ port, bin, run: spawnCommandRunner() });
+    const report = await diagnoseTunnel({ publicUrl, localUrl: localUrl!, funnel });
     console.log(JSON.stringify(report, null, 2));
     return;
   }
@@ -508,7 +570,7 @@ const isMain =
 
 if (isMain) {
   main().catch((err) => {
-    console.error(err);
+    console.error(safeErrorText(err, [loadConfig()?.token]));
     process.exit(1);
   });
 }

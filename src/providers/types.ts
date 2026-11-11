@@ -39,6 +39,10 @@ export interface SessionSummary {
   liveStatus?: string;
   /** Registry session kind, when present. */
   kind?: string;
+  /** Age of the oldest pending approval, or null when nothing is waiting. */
+  pendingApprovalAgeMs?: number | null;
+  /** True when the oldest pending approval is older than the stall threshold (default 10 minutes). */
+  stalled_on_approval?: boolean;
 }
 
 export interface TranscriptItem {
@@ -83,6 +87,11 @@ export interface SendMessageResult {
   permissionMode?: string;
   /** Plain-language resume/fork and terminal-visibility note. */
   note?: string;
+  /**
+   * Interactive inbox outcome.
+   * queued_not_started means the socket accepted the text and the session stayed idle.
+   */
+  inboxState?: 'started' | 'queued_not_started' | 'queued_mid_turn' | 'not_delivered';
 }
 
 export interface InterruptResult {
@@ -273,6 +282,13 @@ export interface SendMessageOptions {
   binding?: 'new' | 'resume';
   /** Codex: send even when the thread is already loaded by another client. */
   force?: boolean;
+  /**
+   * Claude inbox: none reports queued_not_started when an idle session does not start.
+   * headless resumes only after that wait, and only when the session is still idle.
+   */
+  inboxFallback?: 'none' | 'headless';
+  /** How long to watch an idle interactive session for a turn to start. Default 5000. */
+  inboxPickupMs?: number;
 }
 
 export interface SessionActivity {

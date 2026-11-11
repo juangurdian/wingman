@@ -385,11 +385,13 @@ Claude Code sessions (interactive, background, `-p`; NOT `--bare`) bind a per-se
 
 **Delivery Behavior**:
 - **No acknowledgement**: Server sends nothing on success; connection stays open
-- **Success**: "delivered" means "written without error"
+- **Write succeeded**: the socket accepted the bytes. That is not the same as a turn starting.
 - **Rejection**: EOF or EPIPE within ~500ms after auth line = rejected (wrong token, no token on Windows)
 - **Missing socket**: Connect timeout (~3s) returns `socket_missing`
-- **Idle session**: Starts a new turn immediately (tested: reply in ~8s)
-- **Busy session**: Message queued, delivered between tool calls ("Message from ...")
+- **Idle session, protocol**: Current Claude Code is supposed to start a turn. The wire format has no extra submit or wake line Wingman can send.
+- **Idle session, some builds**: Windows desktop builds in the 2.1.227 line (and the same symptom reported against the interactive TUI) put the text in the composer and wait until a person presses Enter. Wingman watches for `inbox_pickup_ms` (default 5 seconds). If the session stays idle, `send_message` returns `status: "queued_not_started"`. It does not pretend the turn started.
+- **Opt-in headless fallback**: `inbox_fallback: "headless"` (or `WINGMAN_INBOX_FALLBACK=headless`) starts a headless resume only when the session was idle before the write and is still idle after the wait. The composer may still hold the text, so Enter can run it a second time. Wingman does not do this while the session is mid-turn, and it does not do it when the phase is unknown.
+- **Busy session**: Message queued, delivered between tool calls. `inboxState` is `queued_mid_turn`. No headless resume.
 - **UTF-8**: Multi-line text, accents, CJK, and emoji (surrogate pairs) arrive intact
 
 **Cost Note**: Each injected message is a full turn on that session's context. In testing, a single injection cost ~340k tokens (cached context). Plan accordingly for high-context sessions.

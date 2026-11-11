@@ -20,9 +20,14 @@ import {
   resolveHostName,
   resolveCodexModel,
   maskToken,
+  rotateStoredToken,
+  formatRotationMessage,
+  weakTokenReason,
+  safeErrorText,
   type BridgeConfig,
 } from './config.js';
 import { startMcpServer } from './mcp/server.js';
+import { ensureConfiguredTunnel } from './ensure-tunnel.js';
 
 function parseArgs(argv: string[]) {
   let port: number | undefined;
@@ -30,6 +35,9 @@ function parseArgs(argv: string[]) {
   let reuse = false;
   let newToken = false;
   let showToken = false;
+  let rotate = false;
+  let ensureTunnel: 'none' | 'tailscale' | 'quick' = 'none';
+  let tailscaleBin: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--port' && argv[i + 1]) {
@@ -40,18 +48,27 @@ function parseArgs(argv: string[]) {
       reuse = true;
     } else if (a === '--new-token') {
       newToken = true;
+    } else if (a === '--rotate-token') {
+      rotate = true;
     } else if (a === '--show-token') {
       showToken = true;
+    } else if (a === '--ensure-tunnel' && argv[i + 1]) {
+      const mode = argv[++i];
+      if (mode === 'tailscale' || mode === 'quick' || mode === 'none') ensureTunnel = mode;
+      else throw new Error('--ensure-tunnel expects tailscale, quick, or none');
+    } else if (a === '--tailscale-bin' && argv[i + 1]) {
+      tailscaleBin = argv[++i];
     } else if (a === '--help' || a === '-h') {
       printHelp();
       process.exit(0);
     }
   }
-  return { port, host, reuse, newToken, showToken };
+  return { port, host, reuse, newToken, showToken, rotate, ensureTunnel, tailscaleBin };
 }
 
 function printHelp() {
-  console.log(`Usage: wingman-pair [--port PORT] [--host HOST] [--new-token] [--show-token]
+  console.log(`Usage: wingman-pair [--port PORT] [--host HOST] [--new-token] [--rotate-token] [--show-token]
+       wingman-pair --ensure-tunnel tailscale|quick [--tailscale-bin PATH]
        npx wingman-mcp [--port PORT] [--host HOST] [--new-token] [--show-token]
 
 Dual-provider MCP bridge for Codex and Claude Code.
@@ -59,9 +76,16 @@ Dual-provider MCP bridge for Codex and Claude Code.
 Options:
   --port PORT           Server port (default 3847, or WINGMAN_PORT env)
   --host HOST           Bind host (default 127.0.0.1, or WINGMAN_HOST env)
-  --new-token           Generate a fresh token (default: reuse existing)
+                        Pass 0.0.0.0 only when you mean to listen on every interface.
+                        DNS rebinding protection stays on. Set WINGMAN_ALLOWED_HOSTS
+                        or WINGMAN_TUNNEL_HOST to the Funnel or tunnel hostname.
+  --new-token           Generate a fresh token and start the server (default: reuse existing)
+  --rotate-token        Write a new token and exit. A running server picks it up on restart.
   --reuse-token         Explicitly reuse existing token (now the default)
-  --show-token          Show full token in output (default: masked for security)
+  --show-token          Show full token in output (default: masked)
+  --ensure-tunnel MODE  tailscale, quick, or none. tailscale checks Funnel and runs
+                        tailscale funnel --bg when the port is not already published.
+  --tailscale-bin PATH  Path to tailscale.exe on Windows, or the tailscale binary.
 
 Environment:
   CODEX_MOCK=1          Use in-memory Codex mock (no codex binary)
@@ -100,10 +124,10 @@ function getMockModeDisplay(): string {
   } else if (claudeMock) {
     return 'Codex real, Claude mock (CLAUDE_MOCK=1)';
   }
-  return 'no — real Codex + Claude providers';
+  return 'no (real Codex and Claude providers)';
 }
 
-function printPairInstructions(cfg: BridgeConfig, localUrl: string, showToken: boolean) {
+export function printPairInstructions(cfg: BridgeConfig, localUrl: string, showToken: boolean) {
   const tunnelHint = `https://YOUR-TUNNEL-HOST/mcp`;
   const displayToken = showToken ? cfg.token : maskToken(cfg.token);
   const authHeader = `Bearer ${displayToken}`;
@@ -115,7 +139,7 @@ function printPairInstructions(cfg: BridgeConfig, localUrl: string, showToken: b
 
   const tokenNote = showToken
     ? ''
-    : `  (masked — full token in ${cfgPath}, or use --show-token)`;
+    : `  (masked; full token in ${cfgPath}, or use --show-token)`;
 
   console.log(`
 ╔══════════════════════════════════════════════════════════════════╗
@@ -157,7 +181,7 @@ Pick one tunnel option, ranked by durability:
   ┌─ 4. Cloudflare Quick Tunnel (ephemeral, for demos) ────────────┐
   │  cloudflared tunnel --url http://${cfg.host}:${cfg.port}                       │
   │  → Gives you a URL like https://abc.trycloudflare.com          │
-  │  → ⚠ URL changes every restart — use for demos only            │
+  │  → ⚠ URL changes every restart. Use for demos only.          │
   └────────────────────────────────────────────────────────────────┘
 
 Then append /mcp to your tunnel URL (e.g., https://abc.trycloudflare.com/mcp).
@@ -201,6 +225,19 @@ Ctrl+C to stop the bridge.
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.rotate) {
+    const rotated = rotateStoredToken();
+    console.log(
+      formatRotationMessage({
+        path: rotated.path,
+        token: rotated.token,
+        showToken: args.showToken,
+        previousWasWeak: rotated.previousWasWeak,
+        weakReason: rotated.weakReason,
+      }),
+    );
+    return;
+  }
   const host = args.host ?? resolveHost();
   const port = args.port ?? resolvePort();
   const mock = process.env.CODEX_MOCK === '1' || process.env.CODEX_MOCK === 'true';
@@ -221,6 +258,12 @@ async function main() {
     console.error('[wingman] Reusing existing token from config (use --new-token to regenerate)');
   }
   if (!token) token = generateToken();
+  const weak = weakTokenReason(token);
+  if (weak) {
+    console.error(
+      `[wingman] The configured token ${weak}. Run wingman-pair --rotate-token before exposing the bridge.`,
+    );
+  }
 
   const hostId = resolveHostId();
   const hostName = resolveHostName();
@@ -239,6 +282,17 @@ async function main() {
 
   const localUrl = mcpUrl(host, port, '/mcp');
   printPairInstructions(cfg, localUrl, args.showToken);
+
+  if (args.ensureTunnel !== 'none') {
+    const ensured = ensureConfiguredTunnel({
+      mode: args.ensureTunnel,
+      port,
+      host,
+      tailscaleBin: args.tailscaleBin,
+    });
+    console.error(`[wingman] tunnel: ${ensured.summary}`);
+    if (ensured.connectorUrl) console.error(`[wingman] connector: ${ensured.connectorUrl}`);
+  }
 
   const server = await startMcpServer({
     host,
@@ -262,7 +316,11 @@ async function main() {
   process.on('SIGTERM', () => void shutdown());
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+const isMain = /(?:^|[\\/])pair\.(ts|js)$/.test(process.argv[1] ?? '');
+
+if (isMain) {
+  main().catch((err) => {
+    console.error(safeErrorText(err, [loadConfig()?.token, process.env.WINGMAN_TOKEN]));
+    process.exit(1);
+  });
+}
