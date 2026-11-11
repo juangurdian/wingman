@@ -166,7 +166,10 @@ export async function watchInboxPhase(opts: {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<InboxLivePhase> {
-  const pollMs = opts.pollMs ?? 250;
+  // One second, not a tight loop. Each poll lists live sessions, and that
+  // command is synchronous. Five checks across the default wait is enough
+  // to see a turn start.
+  const pollMs = opts.pollMs ?? 1000;
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const start = now();
@@ -207,16 +210,21 @@ export async function deliverInteractiveInbox(opts: {
     return { headless: false, result: toResult(opts.sessionId, decision) };
   }
 
-  const after =
-    before === 'mid_turn'
-      ? before
-      : await watchInboxPhase({
-          sessionId: opts.sessionId,
-          timeoutMs: opts.pickupMs,
-          list: opts.list,
-          now: opts.now,
-          sleep: opts.sleep,
-        });
+  let after: InboxLivePhase = before;
+  if (before !== 'mid_turn') {
+    try {
+      after = await watchInboxPhase({
+        sessionId: opts.sessionId,
+        timeoutMs: opts.pickupMs,
+        list: opts.list,
+        now: opts.now,
+        sleep: opts.sleep,
+      });
+    } catch {
+      // The write already succeeded. An unknown phase must not start another turn.
+      after = 'unknown';
+    }
+  }
   const decision = decideInboxDelivery({
     writeOk: true,
     before,

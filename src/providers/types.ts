@@ -43,6 +43,11 @@ export interface SessionSummary {
   pendingApprovalAgeMs?: number | null;
   /** True when the oldest pending approval is older than the stall threshold (default 10 minutes). */
   stalled_on_approval?: boolean;
+  /**
+   * ok: the approval list was read. unavailable: the read failed, so a missing
+   * stall flag is not a clean bill of health. unsupported: this provider has no approval API.
+   */
+  approval_lookup?: 'ok' | 'unavailable' | 'unsupported';
 }
 
 export interface TranscriptItem {

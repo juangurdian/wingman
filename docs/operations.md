@@ -61,17 +61,19 @@ The task:
 - Has no execution time limit, so a long bridge is not killed by Task Scheduler.
 - Starts `node` with `pair.js` and does **not** pass `--new-token`.
 - With `--tunnel tailscale`, also passes `--ensure-tunnel tailscale`. Funnel `--bg` persists in tailscaled, so the task checks that the funnel is active and republishes the port only when it is not.
-- With `--tunnel quick`, starts a Cloudflare quick tunnel. The trycloudflare.com hostname changes every start. Use it for a demo, not for a connector you want to keep.
+- With `--tunnel quick`, starts a Cloudflare quick tunnel and waits for the trycloudflare.com URL before calling that a success. The hostname changes every start. Use it for a demo, not for a connector you want to keep. If cloudflared fails to launch, the task logs that and still starts the bridge.
 
 The bearer token is created once, in `%USERPROFILE%\.wingman\config.json`, and reused on every start. A crash restart does not rotate it. Rotate on purpose with `wingman-pair --rotate-token` or `wingman-token rotate`, then restart the task so it reads the new file. Output is masked unless you pass `--show-token`. `WINGMAN_TOKEN` overrides the file.
 
-The default listen address is `127.0.0.1`. DNS rebinding protection is on, and the allowlist includes the Funnel or tunnel hostname (`WINGMAN_TUNNEL_HOST`, `WINGMAN_ALLOWED_HOSTS`, or `tunnelHost` in the config file). Opt into every interface with `--host 0.0.0.0` or `WINGMAN_HOST=0.0.0.0`. Protection stays on. Add the Host header clients will send, or those requests are rejected.
+The default listen address is `127.0.0.1`. DNS rebinding protection is on, and the allowlist includes the Funnel or tunnel hostname (`WINGMAN_TUNNEL_HOST`, `WINGMAN_ALLOWED_HOSTS`, or `tunnelHost` in the config file). The running server reads that list on each request, so saving a hostname after startup does not require a restart for the Host check. Opt into every interface with `--host 0.0.0.0` or `WINGMAN_HOST=0.0.0.0`. Protection stays on. Add the Host header clients will send, or those requests are rejected.
 
 `get_bridge_status` includes `heartbeatAgeMs`, `heartbeatStale`, and `heartbeatWarning`. The file is rewritten about every 15 seconds. Older than 5 minutes means this process is not writing beats.
 
-`list_sessions` and `get_status` include `pendingApprovalAgeMs` and `stalled_on_approval`. The flag is true when the oldest pending approval is at least 10 minutes old. `WINGMAN_APPROVAL_STALL_MS` changes the threshold.
+`list_sessions` and `get_status` include `pendingApprovalAgeMs` and `stalled_on_approval`. The flag is true when the oldest pending approval is at least 10 minutes old. `WINGMAN_APPROVAL_STALL_MS` changes the threshold. If the approval lookup throws, the row sets `approval_lookup` to `unavailable` and leaves the stall flag off, so a failed read is not reported as a clean session.
 
-Commands that spawn `claude`, `tailscale`, or `cloudflared` use `shell: false`. On Windows the `.cmd` or `.exe` path is resolved first. That avoids Node's DEP0190 warning, which is raised when arguments are passed with `shell: true`.
+Commands that spawn `claude`, `tailscale`, or `cloudflared` use `shell: false`. On Windows a `.exe` is spawned directly. A `.cmd` or `.bat` file is run through `cmd.exe /d /s /c` with the arguments quoted. That avoids Node's DEP0190 warning, which is raised when arguments are passed with `shell: true`.
+
+An interactive inbox write that is accepted, followed by a failed status poll, stays `queued_not_started`. Wingman does not start a headless resume in that case, including when `inbox_fallback` is `headless`, because the session might be mid-turn. The pickup poll runs about once a second. Each poll lists live sessions.
 
 On Linux or macOS the command writes the XML and prints the `schtasks` line. It does not register a task there.
 

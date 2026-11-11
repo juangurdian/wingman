@@ -136,7 +136,7 @@ The listen address defaults to `127.0.0.1`. DNS rebinding protection stays on. T
 - `tunnelHost` in `~/.wingman/config.json` (set by `wingman-tunnel tailscale`)
 - the hostname stored in `~/.wingman/tunnel-state.json`
 
-To listen on every interface, run `wingman-pair --host 0.0.0.0` or set `WINGMAN_HOST=0.0.0.0`. Protection stays on. Requests whose Host header is not on the allowlist are rejected. Add that hostname before you expect them to work.
+To listen on every interface, run `wingman-pair --host 0.0.0.0` or set `WINGMAN_HOST=0.0.0.0`. Protection stays on. Requests whose Host header is not on the allowlist are rejected. The running server re-reads that list on each request, so a Funnel or quick-tunnel hostname saved after startup is accepted without a restart.
 
 Rotate a token without starting the server:
 
@@ -155,11 +155,11 @@ wingman-task install --tunnel tailscale --tailscale-bin "C:\Program Files\Tailsc
 wingman-task install --tunnel quick
 ```
 
-Funnel `--bg` persists in tailscaled, so the task checks that it is active and runs `tailscale funnel --bg` only when this port is not published. The quick tunnel option starts cloudflared. That hostname changes every start.
+Funnel `--bg` persists in tailscaled, so the task checks that it is active and runs `tailscale funnel --bg` only when this port is not published. The quick tunnel option starts cloudflared, waits for the `trycloudflare.com` URL, and records that hostname. The hostname still changes every start. A failed launch is reported and does not count as a running tunnel.
 
 `~/.wingman/heartbeat.json` is rewritten about every 15 seconds while this process is running. `get_bridge_status` and `wingman-doctor` set a warning when the file is missing or older than 5 minutes. A stale beat means Wingman is stopped, hung, or the machine slept and nothing wrote a new beat. It does not by itself mean the tunnel is down. After a reboot, a stale or missing file means the scheduled task did not bring the process back.
 
-Child processes are spawned with `shell: false`. On Windows, a `.cmd` shim such as `claude.cmd` is resolved on `PATH` and spawned directly, so Node does not emit DEP0190.
+Child processes are spawned with `shell: false`. On Windows, a `.exe` is spawned directly. A `.cmd` or `.bat` shim is run through `cmd.exe /d /s /c` with a quoted command line, so Node does not emit DEP0190.
 
 Details: [Operations](docs/operations.md) and [Security](SECURITY.md).
 

@@ -322,9 +322,10 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
       }
       try {
         const listed = await provider.listApprovals(session.id);
-        stamped.push({ ...session, ...approvalStallFields(listed.approvals, now) });
+        stamped.push({ ...session, ...approvalStallFields(listed.approvals, now), approval_lookup: 'ok' });
       } catch {
-        stamped.push({ ...session, pendingApprovalAgeMs: null, stalled_on_approval: false });
+        const { pendingApprovalAgeMs: _age, stalled_on_approval: _stalled, ...rest } = session;
+        stamped.push({ ...rest, approval_lookup: 'unavailable' });
       }
     }
     return stamped;
@@ -628,11 +629,24 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
         const provider = providers.get(args.provider);
         const session = provider.getSession ? await provider.getSession(args.session_id) : null;
         if (!session) return errorResult(`Session not found: ${args.session_id}`);
-        const approvals = provider.listApprovals
-          ? await provider.listApprovals(args.session_id)
-          : { sessionId: args.session_id, approvals: [] };
+        let approvals: { approvals: Array<{ requestedAt: number }> } = { approvals: [] };
+        let stall: { pendingApprovalAgeMs?: number | null; stalled_on_approval?: boolean } = {
+          pendingApprovalAgeMs: null,
+          stalled_on_approval: false,
+        };
+        let approval_lookup: 'ok' | 'unavailable' | 'unsupported' = 'unsupported';
+        if (provider.listApprovals) {
+          try {
+            const listed = await provider.listApprovals(args.session_id);
+            approvals = listed;
+            stall = approvalStallFields(listed.approvals);
+            approval_lookup = 'ok';
+          } catch {
+            approval_lookup = 'unavailable';
+            stall = {};
+          }
+        }
         const activity = provider.activity?.(args.session_id);
-        const stall = approvalStallFields(approvals.approvals);
         const state = deriveSessionState({
           running: activity?.running ?? session.status === 'running',
           approvalCount: approvals.approvals.length || activity?.approvalCount || 0,
@@ -666,6 +680,7 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
           liveStatus: session.liveStatus,
           pendingApprovalAgeMs: stall.pendingApprovalAgeMs,
           stalled_on_approval: stall.stalled_on_approval,
+          approval_lookup,
           runs: headless,
         });
       } catch (err) {

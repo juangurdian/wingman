@@ -42,7 +42,7 @@ import {
   safeErrorText,
   type BridgeConfig,
 } from '../config.js';
-import { allowedHostsForListen, mcpExpressOptions } from '../bind.js';
+import { liveAllowedHosts, mcpExpressOptions } from '../bind.js';
 import { loadTunnelState } from '../tunnel.js';
 import { buildBridgeStatus, writeHeartbeat } from '../reachability.js';
 
@@ -93,9 +93,9 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
   if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
 
   // Listen stays on `host` (127.0.0.1 unless opted into 0.0.0.0).
-  // allowedHosts turns on the SDK Host check and includes the Funnel or tunnel name
-  // so a remote client is accepted without opening the check to every hostname.
-  const allowedHosts = allowedHostsForListen(host, loadTunnelState()?.lastPublicUrl);
+  // allowedHosts turns on the SDK Host check. The list is read on each request,
+  // so a Funnel or quick-tunnel hostname saved after startup is accepted without a restart.
+  const allowedHosts = liveAllowedHosts(host, () => loadTunnelState()?.lastPublicUrl);
   const app = createMcpExpressApp(mcpExpressOptions(host, allowedHosts));
 
   // Health endpoint - auth requirement is configurable via WINGMAN_HEALTHZ_AUTH_FREE

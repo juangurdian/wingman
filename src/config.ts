@@ -420,9 +420,11 @@ export function weakTokenReason(token: string): string | undefined {
   if (!value) return 'is empty';
   const lower = value.toLowerCase();
   for (const prefix of WEAK_TOKEN_PREFIXES) {
-    if (lower.startsWith(prefix)) return `starts with ${prefix}`;
+    if (!lower.startsWith(prefix)) continue;
+    // A token that is only the prefix would otherwise be copied into the warning.
+    return lower === prefix ? 'starts with a known test prefix' : `starts with ${prefix}`;
   }
-  if (WEAK_TOKEN_EXACT.has(lower)) return `is the placeholder "${lower}"`;
+  if (WEAK_TOKEN_EXACT.has(lower)) return 'is a known placeholder';
   return undefined;
 }
 
@@ -430,9 +432,9 @@ export function isWeakToken(token: string): boolean {
   return weakTokenReason(token) !== undefined;
 }
 
-/** Replace a full bearer token with its masked form. Short strings are left alone. */
+/** Replace a configured bearer token with its masked form, whatever its length. */
 export function redactToken(text: string, token: string | undefined): string {
-  if (!token || token.length < 8 || !text.includes(token)) return text;
+  if (!token || !text.includes(token)) return text;
   return text.split(token).join(maskToken(token));
 }
 

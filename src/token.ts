@@ -4,6 +4,7 @@
  * wingman-token rotate writes ~/.wingman/config.json and does not start the server.
  */
 
+import { isCliMain } from './cli-entry.js';
 import { loadConfig, maskToken, rotateStoredToken, formatRotationMessage, safeErrorText, weakTokenReason } from './config.js';
 
 function showTokenFlag(argv: string[]): boolean {
@@ -71,10 +72,7 @@ function main(): void {
   process.exitCode = 1;
 }
 
-const isMain =
-  process.argv[1]?.endsWith('token.ts') ||
-  process.argv[1]?.endsWith('token.js') ||
-  process.argv[1]?.includes('/token');
+const isMain = isCliMain(process.argv[1], ['token', 'wingman-token']);
 
 if (isMain) {
   try {

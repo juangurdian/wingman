@@ -12,6 +12,7 @@ import { platform } from 'node:os';
 import { join } from 'node:path';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { hostnameFromUrl } from './bind.js';
 import { configDir, loadConfig, resolvePort, resolveHost, safeErrorText, saveConfig } from './config.js';
 import {
   classifyRemoteFailure,
@@ -394,6 +395,18 @@ export function rememberFunnelHost(dnsName: string): string {
     saveConfig({ ...cfg, tunnelHost: host });
   }
   return url;
+}
+
+/** Record a quick-tunnel connector URL and allowlist its hostname. */
+export function rememberQuickHost(url: string): string {
+  const connector = url.endsWith('/mcp') ? url : `${url.replace(/\/$/, '')}/mcp`;
+  const host = hostnameFromUrl(connector);
+  recordTunnelUrl(connector, 'quick-tunnel');
+  const cfg = loadConfig();
+  if (cfg && host && cfg.tunnelHost !== host) {
+    saveConfig({ ...cfg, tunnelHost: host });
+  }
+  return connector;
 }
 
 export function probeHttp(url: string, timeoutMs = 3000): Promise<{ status?: number; body?: string; error?: string }> {

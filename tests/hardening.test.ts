@@ -15,7 +15,8 @@ import {
   saveConfig,
   weakTokenReason,
 } from '../src/config.js';
-import { collectAllowedHosts, mcpExpressOptions } from '../src/bind.js';
+import { collectAllowedHosts, liveAllowedHosts, mcpExpressOptions } from '../src/bind.js';
+import { isCliMain } from '../src/cli-entry.js';
 import { claudeAgentsSpawnPlan } from '../src/claude-inbox.js';
 import { resolveCommandOnPath } from '../src/spawn-command.js';
 import {
@@ -31,6 +32,7 @@ import {
   FUNNEL_NOT_ENABLED,
   parseFunnelFailure,
   parseTailscaleStatus,
+  proxiesPort,
   readFunnelDiagnosis,
   resolveTailscaleBin,
   type CommandResult,
@@ -44,7 +46,7 @@ import {
 } from '../src/inbox-pickup.js';
 import { approvalStallFields, APPROVAL_STALL_MS_DEFAULT } from '../src/session-status.js';
 import { createToolHandlers } from '../src/mcp/tools.js';
-import { printPairInstructions } from '../src/pair.js';
+import { printPairInstructions, savedPairConfig } from '../src/pair.js';
 import type { ProviderName, ProviderRegistry, SessionProvider, SessionSummary } from '../src/providers/index.js';
 
 const dirs: string[] = [];
@@ -83,13 +85,38 @@ describe('token masking and rotation', () => {
     const token = generateToken();
     expect(redactToken(`refused ${token} from client`, token)).toBe(`refused ${maskToken(token)} from client`);
     expect(redactToken('no secret here', token)).toBe('no secret here');
+    expect(redactToken('saw abcd12 in the error', 'abcd12')).toBe(`saw ${maskToken('abcd12')} in the error`);
+    expect(redactToken('saw abcd in the error', 'abcd')).toBe('saw **** in the error');
   });
 
   it('warns on smoke- and other obvious test tokens', () => {
     expect(weakTokenReason('smoke-abc')).toBe('starts with smoke-');
     expect(isWeakToken('test-token')).toBe(true);
-    expect(isWeakToken('changeme')).toBe(true);
+    expect(weakTokenReason('changeme')).toBe('is a known placeholder');
+    expect(weakTokenReason('changeme')).not.toContain('changeme');
     expect(isWeakToken(generateToken())).toBe(false);
+  });
+
+  it('keeps a saved tunnel host when pairing again', () => {
+    const saved = savedPairConfig({
+      token: 'new-token-value-not-printed',
+      host: '127.0.0.1',
+      port: 3847,
+      mock: false,
+      existing: {
+        token: 'old',
+        host: '127.0.0.1',
+        port: 3847,
+        mcpPath: '/mcp',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        tunnelHost: 'pearlwolf.tailnet.ts.net',
+        tailscaleBin: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+      },
+      now: '2026-11-11T00:00:00.000Z',
+    });
+    expect(saved.tunnelHost).toBe('pearlwolf.tailnet.ts.net');
+    expect(saved.tailscaleBin).toBe('C:\\Program Files\\Tailscale\\tailscale.exe');
+    expect(saved.token).toBe('new-token-value-not-printed');
   });
 
   it('rotates the config file and masks the new token', () => {
@@ -202,6 +229,11 @@ describe('bind address and DNS rebinding', () => {
       expect(await status('127.0.0.1')).toBe(200);
       expect(await status('pearlwolf.tailnet.ts.net')).toBe(200);
       expect(await status('evil.example')).toBe(403);
+      const live = liveAllowedHosts('127.0.0.1', () => undefined);
+      expect(live.includes('pearlwolf.tailnet.ts.net')).toBe(false);
+      vi.stubEnv('WINGMAN_TUNNEL_HOST', 'later.tailnet.ts.net');
+      expect(live.includes('later.tailnet.ts.net')).toBe(true);
+      vi.unstubAllEnvs();
     } finally {
       await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
     }
@@ -215,6 +247,22 @@ describe('tailscale funnel', () => {
       online: true,
     });
     expect(funnelConnectorUrl('pearlwolf.tailnet.ts.net.')).toBe('https://pearlwolf.tailnet.ts.net/mcp');
+    const same = JSON.stringify({
+      AllowFunnel: { 'box.tailnet.ts.net:443': true },
+      Web: { 'box.tailnet.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3847' } } } },
+    });
+    expect(proxiesPort(same, 3847)).toBe(true);
+    expect(proxiesPort(same, 38470)).toBe(false);
+    const otherService = JSON.stringify({
+      AllowFunnel: { 'other:443': true },
+      Web: { 'box:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3847' } } } },
+    });
+    expect(proxiesPort(otherService, 3847)).toBe(false);
+    const prefix = JSON.stringify({
+      AllowFunnel: { h: true },
+      Web: { h: { Proxy: 'http://127.0.0.1:38470' } },
+    });
+    expect(proxiesPort(prefix, 3847)).toBe(false);
   });
 
   it('reports Funnel not enabled on tailnet with the approval link', () => {
@@ -273,7 +321,7 @@ describe('tailscale funnel', () => {
     );
   });
 
-  it('checks funnel from the scheduled-task ensure path and keeps the quick tunnel option', () => {
+  it('checks funnel from the scheduled-task ensure path and keeps the quick tunnel option', async () => {
     tempConfig();
     const calls: string[][] = [];
     const run: CommandRunner = (_command, args) => {
@@ -294,7 +342,7 @@ describe('tailscale funnel', () => {
       }
       return { status: 0, stdout: '', stderr: '' };
     };
-    const ensured = ensureConfiguredTunnel({
+    const ensured = await ensureConfiguredTunnel({
       mode: 'tailscale',
       port: 3847,
       host: '127.0.0.1',
@@ -303,18 +351,28 @@ describe('tailscale funnel', () => {
     });
     expect(ensured.connectorUrl).toBe('https://pearlwolf.tailnet.ts.net/mcp');
     expect(calls.some((args) => args[0] === 'funnel' && args[1] === '--bg' && args[2] === '3847')).toBe(true);
-    const quick = ensureConfiguredTunnel({
+    const quick = await ensureConfiguredTunnel({
       mode: 'quick',
       port: 3847,
       host: '127.0.0.1',
       spawnQuick: (plan) => {
         expect(plan.shell).toBe(false);
         expect(plan.args).toEqual(['tunnel', '--url', 'http://127.0.0.1:3847']);
-        return { pid: 42 };
+        return { pid: 42, connectorUrl: 'https://demo.trycloudflare.com/mcp' };
       },
     });
+    expect(quick.connectorUrl).toBe('https://demo.trycloudflare.com/mcp');
     expect(quick.summary).toMatch(/quick tunnel/i);
     expect(quick.summary).toMatch(/changes every start/);
+    const failed = await ensureConfiguredTunnel({
+      mode: 'quick',
+      port: 3847,
+      host: '127.0.0.1',
+      spawnQuick: () => ({ error: 'spawn ENOENT' }),
+    });
+    expect(failed.connectorUrl).toBeUndefined();
+    expect(failed.summary).toMatch(/did not start/);
+    expect(failed.summary).toMatch(/ENOENT/);
   });
 });
 
@@ -410,6 +468,26 @@ describe('heartbeat and approval stall', () => {
     };
     expect(statusBody.stalled_on_approval).toBe(true);
     expect(statusBody.pendingApprovalAgeMs).toBeGreaterThan(APPROVAL_STALL_MS_DEFAULT);
+
+    const broken: SessionProvider = {
+      ...codex,
+      async listApprovals() {
+        throw new Error('approval rpc failed');
+      },
+    };
+    const brokenProviders: ProviderRegistry = {
+      ...providers,
+      codex: broken,
+      get(name) {
+        return name === 'codex' ? broken : empty(name);
+      },
+    };
+    const failed = await createToolHandlers(brokenProviders).list_sessions({ provider: 'codex' });
+    const failedBody = JSON.parse(failed.content[0]!.text) as {
+      sessions: Array<{ stalled_on_approval?: boolean; approval_lookup?: string }>;
+    };
+    expect(failedBody.sessions[0]?.approval_lookup).toBe('unavailable');
+    expect(failedBody.sessions[0]?.stalled_on_approval).toBeUndefined();
   });
 });
 
@@ -424,9 +502,35 @@ describe('windows spawn and scheduled task', () => {
       exists: (path) => path === command,
     });
     expect(plan.shell).toBe(false);
-    expect(plan.args).toEqual(['agents', '--json']);
-    expect(plan.command).toBe(command);
+    expect(plan.windowsVerbatimArguments).toBe(true);
+    expect(plan.command.toLowerCase()).not.toMatch(/\.cmd$/);
+    expect(plan.args.slice(0, 3)).toEqual(['/d', '/s', '/c']);
+    expect(plan.args[3]).toContain('claude.CMD');
+    expect(plan.args[3]).toContain('agents');
+    expect(plan.args[3]).toContain('--json');
+    const exe = claudeAgentsSpawnPlan({
+      platform: 'win32',
+      bin: 'C:\\Tools\\claude.exe',
+      exists: () => true,
+    });
+    expect(exe.shell).toBe(false);
+    expect(exe.command).toBe('C:\\Tools\\claude.exe');
+    expect(exe.args).toEqual(['agents', '--json']);
     expect(resolveCommandOnPath('claude', { platform: 'linux' })).toBe('claude');
+    expect(isCliMain('/usr/local/bin/wingman-token', ['token', 'wingman-token'], () => {
+      throw new Error('missing');
+    })).toBe(true);
+    expect(isCliMain('/usr/local/bin/wingman-pair', ['pair', 'wingman-pair', 'wingman-mcp'], () => '/pkg/dist/pair.js')).toBe(
+      true,
+    );
+    expect(isCliMain('/usr/local/bin/wingman-mcp', ['pair', 'wingman-pair', 'wingman-mcp'], () => '/pkg/dist/pair.js')).toBe(
+      true,
+    );
+    expect(
+      isCliMain('/repo/tests/hardening.test.ts', ['pair', 'wingman-pair', 'wingman-mcp'], () => {
+        throw new Error('no');
+      }),
+    ).toBe(false);
   });
 
   it('can ensure a tailscale funnel without passing --new-token', () => {
@@ -480,6 +584,19 @@ describe('interactive inbox pickup', () => {
     const unknown = decideInboxDelivery({ writeOk: true, before: 'unknown', after: 'unknown', fallback: 'headless' });
     expect(unknown.headless).toBe(false);
     expect(unknown.status).toBe('queued_not_started');
+
+    const polled = await deliverInteractiveInbox({
+      sessionId: 's',
+      beforeStatus: 'idle',
+      pickupMs: 1000,
+      fallback: 'headless',
+      send: async () => ({ delivered: true }),
+      list: async () => {
+        throw new Error('agents failed');
+      },
+    });
+    expect(polled.headless).toBe(false);
+    expect(polled.result.inboxState).toBe('queued_not_started');
   });
 
   it('waits for the session to leave idle and then reports started', async () => {

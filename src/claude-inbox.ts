@@ -432,7 +432,8 @@ function socketPathExists(socketPath: string): boolean {
 
 /**
  * `claude agents --json` without shell:true.
- * On Windows the command is the resolved claude.cmd or claude.exe, which avoids DEP0190.
+ * A resolved claude.exe is spawned directly. A claude.cmd or claude.bat file
+ * is passed to cmd.exe /d /s /c, which is how Windows runs a batch file without DEP0190.
  */
 export function claudeAgentsSpawnPlan(opts?: {
   platform?: NodeJS.Platform;
@@ -440,10 +441,10 @@ export function claudeAgentsSpawnPlan(opts?: {
   pathExt?: string;
   exists?: (path: string) => boolean;
   bin?: string;
-}): { command: string; args: string[]; shell: false } {
+}): { command: string; args: string[]; shell: false; windowsVerbatimArguments?: boolean } {
   const bin = opts?.bin ?? resolveClaudePath();
   const command = resolveCommandOnPath(bin, opts);
-  return commandSpawnPlan(command, ['agents', '--json']);
+  return commandSpawnPlan(command, ['agents', '--json'], opts?.platform);
 }
 
 /**
@@ -460,6 +461,7 @@ export function runClaudeAgents(): ClaudeAgentsEntry[] {
       encoding: 'utf8',
       timeout: 10000,
       shell: plan.shell,
+      windowsVerbatimArguments: plan.windowsVerbatimArguments,
     });
 
     if (result.error || result.status !== 0) {

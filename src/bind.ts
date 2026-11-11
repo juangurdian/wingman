@@ -65,6 +65,26 @@ export function collectAllowedHosts(input?: {
   return hosts;
 }
 
+/**
+ * Allowlist whose `includes` reads config and tunnel state on every request.
+ * The MCP SDK stores the array it is given, so a Funnel hostname saved after
+ * listen still passes the Host check without a restart.
+ */
+export class RefreshingAllowList extends Array<string> {
+  constructor(private readonly current: () => readonly string[]) {
+    super();
+    Object.setPrototypeOf(this, RefreshingAllowList.prototype);
+  }
+
+  override includes(search: string, fromIndex?: number): boolean {
+    return this.current().includes(search, fromIndex);
+  }
+}
+
+export function liveAllowedHosts(listenHost: string, readPublicUrl?: () => string | undefined): string[] {
+  return new RefreshingAllowList(() => allowedHostsForListen(listenHost, readPublicUrl?.()));
+}
+
 /** Allowed hosts for the process that is about to listen. */
 export function allowedHostsForListen(listenHost: string, publicUrl?: string): string[] {
   const config = loadConfig();

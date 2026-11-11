@@ -9,6 +9,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { commandSpawnPlan, type SpawnPlan } from './spawn-command.js';
 
 export const FUNNEL_NOT_ENABLED = 'Funnel not enabled on tailnet';
 
@@ -59,19 +60,65 @@ export function parseFunnelFailure(text: string): { notEnabled: boolean; approva
   return { notEnabled, approvalUrl };
 }
 
-/** True when a serve/funnel status document proxies this local port and allows Funnel. */
-export function proxiesPort(statusJson: string, port: number): boolean {
+function proxyStringMatches(value: string, port: number): boolean {
+  const trimmed = value.trim();
+  let url: URL;
   try {
-    const data = JSON.parse(statusJson) as { AllowFunnel?: Record<string, unknown> };
-    const blob = JSON.stringify(data);
-    const allow = data.AllowFunnel
-      ? Object.values(data.AllowFunnel).some((value) => value === true)
-      : /"AllowFunnel"\s*:\s*\{[^}]*true/.test(blob);
-    if (!allow) return false;
-    return blob.includes(`127.0.0.1:${port}`) || blob.includes(`localhost:${port}`);
+    url = trimmed.includes('://') ? new URL(trimmed) : new URL(`http://${trimmed}`);
   } catch {
     return false;
   }
+  const host = url.hostname;
+  if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') return false;
+  const parsed = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80;
+  return parsed === port;
+}
+
+function objectProxiesPort(node: Record<string, unknown>, port: number): boolean {
+  for (const [key, value] of Object.entries(node)) {
+    if (typeof value === 'string' && /^proxy$/i.test(key) && proxyStringMatches(value, port)) return true;
+    if (key === 'Handlers' && value && typeof value === 'object') {
+      for (const handler of Object.values(value as Record<string, unknown>)) {
+        if (handler && typeof handler === 'object' && objectProxiesPort(handler as Record<string, unknown>, port)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * True when one service both proxies this local port and has Funnel permission.
+ * The port is parsed, so 3847 does not match 38470, and another service's
+ * AllowFunnel flag does not count.
+ */
+export function proxiesPort(statusJson: string, port: number): boolean {
+  let data: unknown;
+  try {
+    data = JSON.parse(statusJson);
+  } catch {
+    return false;
+  }
+  if (!data || typeof data !== 'object') return false;
+  const allow = (data as { AllowFunnel?: unknown }).AllowFunnel;
+  const allowMap =
+    allow && typeof allow === 'object' ? (allow as Record<string, unknown>) : {};
+
+  const walk = (node: unknown, key: string | undefined): boolean => {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return false;
+    const obj = node as Record<string, unknown>;
+    if (key && objectProxiesPort(obj, port) && (allowMap[key] === true || obj.AllowFunnel === true)) {
+      return true;
+    }
+    for (const [childKey, child] of Object.entries(obj)) {
+      if (childKey === 'AllowFunnel') continue;
+      if (walk(child, childKey)) return true;
+    }
+    return false;
+  };
+
+  return walk(data, undefined);
 }
 
 export function resolveTailscaleBin(opts?: {
@@ -197,11 +244,13 @@ export function executeFunnel(opts: { port: number; bin: string; run: CommandRun
 
 export function spawnCommandRunner(): CommandRunner {
   return (command, args) => {
-    const result = spawnSync(command, args, {
+    const plan = commandSpawnPlan(command, args);
+    const result = spawnSync(plan.command, plan.args, {
       encoding: 'utf8',
       timeout: 15000,
       shell: false,
       windowsHide: true,
+      windowsVerbatimArguments: plan.windowsVerbatimArguments,
     });
     return {
       status: result.status,
@@ -212,14 +261,6 @@ export function spawnCommandRunner(): CommandRunner {
   };
 }
 
-export function quickTunnelPlan(
-  host: string,
-  port: number,
-  bin = 'cloudflared',
-): { command: string; args: string[]; shell: false } {
-  return {
-    command: bin,
-    args: ['tunnel', '--url', `http://${host}:${port}`],
-    shell: false,
-  };
+export function quickTunnelPlan(host: string, port: number, bin = 'cloudflared'): SpawnPlan {
+  return commandSpawnPlan(bin, ['tunnel', '--url', `http://${host}:${port}`]);
 }

@@ -26,8 +26,36 @@ import {
   safeErrorText,
   type BridgeConfig,
 } from './config.js';
+import { isCliMain } from './cli-entry.js';
 import { startMcpServer } from './mcp/server.js';
 import { ensureConfiguredTunnel } from './ensure-tunnel.js';
+
+/** Pairing keeps a saved Funnel host and tailscale path unless this start replaces the path. */
+export function savedPairConfig(input: {
+  token: string;
+  host: string;
+  port: number;
+  mock: boolean;
+  hostId?: string;
+  hostName?: string;
+  existing: BridgeConfig | null;
+  tailscaleBin?: string;
+  now?: string;
+}): BridgeConfig {
+  const tailscaleBin = input.tailscaleBin?.trim() || input.existing?.tailscaleBin;
+  return {
+    token: input.token,
+    host: input.host,
+    port: input.port,
+    mcpPath: '/mcp',
+    createdAt: input.now ?? new Date().toISOString(),
+    mock: input.mock,
+    hostId: input.hostId,
+    hostName: input.hostName,
+    tunnelHost: input.existing?.tunnelHost,
+    tailscaleBin,
+  };
+}
 
 function parseArgs(argv: string[]) {
   let port: number | undefined;
@@ -268,23 +296,23 @@ async function main() {
   const hostId = resolveHostId();
   const hostName = resolveHostName();
 
-  const cfg: BridgeConfig = {
+  const cfg = savedPairConfig({
     token,
     host,
     port,
-    mcpPath: '/mcp',
-    createdAt: new Date().toISOString(),
     mock,
     hostId,
     hostName,
-  };
+    existing: existingConfig,
+    tailscaleBin: args.tailscaleBin,
+  });
   saveConfig(cfg);
 
   const localUrl = mcpUrl(host, port, '/mcp');
   printPairInstructions(cfg, localUrl, args.showToken);
 
   if (args.ensureTunnel !== 'none') {
-    const ensured = ensureConfiguredTunnel({
+    const ensured = await ensureConfiguredTunnel({
       mode: args.ensureTunnel,
       port,
       host,
@@ -316,7 +344,7 @@ async function main() {
   process.on('SIGTERM', () => void shutdown());
 }
 
-const isMain = /(?:^|[\\/])pair\.(ts|js)$/.test(process.argv[1] ?? '');
+const isMain = isCliMain(process.argv[1], ['pair', 'wingman-pair', 'wingman-mcp']);
 
 if (isMain) {
   main().catch((err) => {
