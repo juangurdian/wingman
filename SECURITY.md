@@ -25,11 +25,13 @@ Wingman protects its MCP endpoint with a bearer token:
 - **Auto-generated**: `wingman-pair` generates a cryptographically random 32-byte token (base64url encoded)
 - **Storage**: Token is saved to `~/.wingman/config.json` with mode `0600` (owner read/write only)
 - **Transmission**: Token must be sent in the `Authorization: Bearer <token>` header
+- **Display**: Pair, doctor, diagnose, and error text print a short prefix (`abcd…`). `--show-token` is the only way to print the full token, and it is for first-time connector setup.
 
 **Best practices:**
 - Never commit tokens to version control
-- Rotate tokens periodically by deleting `~/.wingman/config.json` and re-running `wingman-pair`
-- Use HTTPS tunnels (Cloudflare, Tailscale) — never expose HTTP directly to the internet
+- Rotate with `wingman-pair --rotate-token` or `wingman-token rotate`. Restart Wingman so the running process loads the new file.
+- Treat a token that starts with `smoke-`, `test-`, or another fixture prefix as compromised. Rotate it before the bridge is reachable.
+- Use HTTPS tunnels (Cloudflare or Tailscale). Do not publish the HTTP port on `0.0.0.0` unless you mean to, and keep DNS rebinding protection on.
 
 ### Loopback Binding
 
@@ -37,18 +39,20 @@ By default, Wingman binds to `127.0.0.1`:
 
 - The MCP server is **not** accessible from the network without a tunnel
 - This prevents accidental exposure of your local agent sessions
-- Override with `WINGMAN_HOST` only if you understand the implications
+- DNS rebinding protection is on. The allowlist is loopback plus the Funnel or tunnel hostname from `WINGMAN_TUNNEL_HOST`, `WINGMAN_ALLOWED_HOSTS`, `tunnelHost` in the config file, or the last recorded tunnel URL.
+- `wingman-pair --host 0.0.0.0` or `WINGMAN_HOST=0.0.0.0` listens on every interface. Protection stays on. Add every Host header you expect, or those requests are rejected.
 
 ### Token Rotation
 
-To rotate your bearer token:
+To rotate your bearer token without printing it:
 
 ```bash
-rm ~/.wingman/config.json
-wingman-pair
+wingman-pair --rotate-token
+# or
+wingman-token rotate
 ```
 
-This generates a new token. Update your MCP host configuration with the new token.
+Pass `--show-token` only while you update the MCP connector. A process that is already running keeps the previous token until it restarts. If `WINGMAN_TOKEN` is set, that value wins over the file. Update every MCP host that uses this bridge.
 
 **Rotation best practices:**
 - Rotate tokens after sharing them in demos or screenshots (even if redacted)
@@ -108,10 +112,10 @@ Always verify the tunnel URL before sharing it. Anyone with the URL and token ca
 ## Dependencies
 
 Wingman depends on:
-- `@anthropic-ai/claude-agent-sdk` — Official Claude Code SDK
-- `@modelcontextprotocol/sdk` — MCP protocol implementation
-- `express` — HTTP server
-- `zod` — Input validation
+- `@anthropic-ai/claude-agent-sdk`: official Claude Code SDK
+- `@modelcontextprotocol/sdk`: MCP protocol implementation
+- `express`: HTTP server
+- `zod`: input validation
 
 Keep dependencies updated to receive security patches:
 

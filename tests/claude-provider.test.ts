@@ -688,3 +688,171 @@ describe('ClaudeProvider mock mode - turn controls', () => {
     expect((await provider.listApprovals(created.sessionId)).approvals).toEqual([]);
   });
 });
+
+describe('ClaudeProvider desktop-app session discovery (real mode)', () => {
+  beforeEach(async () => {
+    vi.stubEnv('CLAUDE_DISCOVER', '0');
+    vi.stubEnv('CLAUDE_INBOX_MOCK', '1');
+    vi.stubEnv('CLAUDE_DESKTOP_MOCK', '1');
+    const { setMockLiveSessions } = await import('../src/claude-inbox.js');
+    setMockLiveSessions([]);
+  });
+
+  afterEach(async () => {
+    const { setMockLiveSessions } = await import('../src/claude-inbox.js');
+    setMockLiveSessions([]);
+    const { setMockClaudeDesktopSessions, setMockClaudeDesktopAppState } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions(null);
+    setMockClaudeDesktopAppState(null);
+    vi.unstubAllEnvs();
+  });
+
+  it('merges a desktop session into list_sessions keyed by cliSessionId', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([
+      { desktopId: 'local_abc', cliSessionId: 'cli-123', title: 'My desktop session', cwd: '/x', lastActivityAt: 100 },
+    ]);
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const sessions = await provider.listSessions();
+    const row = sessions.find((s) => s.id === 'cli-123');
+    expect(row?.surface).toBe('claude-desktop');
+    expect(row?.name).toBe('My desktop session');
+    expect(row?.desktopSessionId).toBe('local_abc');
+  });
+
+  it('excludes archived desktop sessions from list_sessions', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([
+      { desktopId: 'local_old', cliSessionId: 'cli-old', title: 'Old', isArchived: true },
+    ]);
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const sessions = await provider.listSessions();
+    expect(sessions.find((s) => s.id === 'cli-old')).toBeUndefined();
+  });
+
+  it('getSession resolves a desktop local_ id to its cliSessionId', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([{ desktopId: 'local_abc', cliSessionId: 'cli-123', title: 'x' }]);
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const detail = await provider.getSession('local_abc');
+    expect(detail?.id).toBe('cli-123');
+  });
+
+  it('an unknown local_ id with no desktop match is left unresolved', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const detail = await provider.getSession('local_does_not_exist');
+    expect(detail).toBeNull();
+  });
+
+  it('refuses to send into a desktop-only session without headless', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([{ desktopId: 'local_abc', cliSessionId: 'cli-123', title: 'Demo' }]);
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const result = await provider.sendMessage('cli-123', 'hi');
+    expect(result.status).toBe('not_delivered');
+    expect(result.note).toContain('headless: true');
+    expect(result.note).toContain('Demo');
+  });
+
+  it('runs a headless resume and labels it when headless: true is passed', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([{ desktopId: 'local_abc', cliSessionId: 'cli-123', title: 'Demo' }]);
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const result = await provider.sendMessage('cli-123', 'hi', { headless: true });
+    expect(result.status).toBe('accepted');
+    expect(result.note).toContain('will not appear in the app');
+  });
+
+  it('warns when the desktop app looks busy on that session', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    const { setMockClaudeDesktopAppState } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([{ desktopId: 'local_abc', cliSessionId: 'cli-123', title: 'Demo' }]);
+    setMockClaudeDesktopAppState({ busySessionIds: ['cli-123'] });
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const result = await provider.sendMessage('cli-123', 'hi', { headless: true });
+    expect(result.note).toContain('conflict');
+  });
+
+  it('headless: true on a non-desktop session id is a no-op (normal path unchanged)', async () => {
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const result = await provider.sendMessage('some-random-cli-session-id', 'hi', { headless: true });
+    expect(result.status).toBe('accepted');
+    expect(result.note).not.toContain('will not appear in the app');
+    expect(result.note).not.toContain('conflict');
+  });
+
+  it('interrupt on a desktop session with no Wingman turn explains the limitation', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([{ desktopId: 'local_abc', cliSessionId: 'cli-123', title: 'Demo' }]);
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const result = await provider.interrupt('cli-123');
+    expect(result.status).toBe('no_active_turn');
+    expect(result.note).toContain('Claude Desktop');
+  });
+
+  it('interrupt still cancels a Wingman-started headless turn on a desktop session', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([{ desktopId: 'local_abc', cliSessionId: 'cli-123', title: 'Demo' }]);
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    await provider.sendMessage('cli-123', 'hi', { headless: true });
+    const result = await provider.interrupt('cli-123');
+    expect(result.status).toBe('interrupted');
+  });
+
+  it('refuses a desktop session addressed by its local_ id when it has no cliSessionId yet', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([{ desktopId: 'local_new', title: 'Never run a turn' }]);
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const result = await provider.sendMessage('local_new', 'hi');
+    expect(result.status).toBe('not_delivered');
+  });
+
+  it('refuses a headless send for a desktop session with no cliSessionId instead of resuming a bogus id', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([{ desktopId: 'local_new', title: 'Never run a turn' }]);
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const result = await provider.sendMessage('local_new', 'hi', { headless: true });
+    expect(result.status).toBe('not_delivered');
+  });
+
+  it('keeps the fork-session note alongside the desktop headless warning', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([{ desktopId: 'local_abc', cliSessionId: 'cli-123', title: 'Demo' }]);
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const result = await provider.sendMessage('cli-123', 'hi', { headless: true, forkSession: true });
+    expect(result.note).toContain('will not appear in the app');
+    expect(result.note).toContain('fork_session is true');
+  });
+
+  it('resolves an archived desktop session local_ id for send/interrupt, even though list_sessions hides it', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([
+      { desktopId: 'local_archived', cliSessionId: 'cli-archived', title: 'Old', isArchived: true },
+    ]);
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+
+    // list_sessions correctly omits the archived session (spec: non-archived only).
+    const sessions = await provider.listSessions();
+    expect(sessions.find((s) => s.id === 'cli-archived')).toBeUndefined();
+
+    // But a caller who already has the local_ id (e.g. from before it was archived)
+    // can still address it: the id resolves and the resulting turn is registered
+    // under the real cliSessionId, not the unresolved desktop id.
+    const result = await provider.sendMessage('local_archived', 'hi');
+    expect(result.sessionId).toBe('cli-archived');
+  });
+});

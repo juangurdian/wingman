@@ -30,8 +30,9 @@
  * - Server sends NO acknowledgement on success
  * - EOF or EPIPE within ~500ms after auth = rejection (bad token or no auth when required)
  * - 'delivered' means 'written without error'
- * - Idle session: starts a new turn immediately
- * - Mid-turn (busy): delivered between tool calls, folded into response
+ * - Idle session: current Claude Code should start a turn. Some builds only queue
+ *   the text until a person presses Enter. Wingman reports queued_not_started then.
+ * - Mid-turn (busy): delivered between tool calls, folded into response. No headless resume.
  * - UTF-8 text including accents, CJK, emoji (surrogate pairs) works
  *
  * Cost note: Each injected message is a full turn on that session's context.
@@ -39,9 +40,18 @@
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { homedir, platform } from 'node:os';
+import { homedir } from 'node:os';
 import { join, basename } from 'node:path';
 import { createConnection, type Socket } from 'node:net';
+import { resolveClaudePath } from './config.js';
+import { commandSpawnPlan, resolveCommandOnPath } from './spawn-command.js';
+import {
+  classifyLivePhase,
+  decideInboxDelivery,
+  resolveInboxPickupMs,
+  watchInboxPhase,
+  type InboxDeliveryState,
+} from './inbox-pickup.js';
 
 /**
  * Check if a process with the given PID is currently running.
@@ -116,6 +126,13 @@ export interface SendToClaudeResult {
    * - 'past_session': Target is a past session, cannot deliver via inbox
    */
   method?: 'inbox' | 'past_session';
+  /**
+   * started: the session left idle after the write.
+   * queued_not_started: the socket accepted the text and the session stayed idle.
+   * queued_mid_turn: the session was already in a turn, so the text waits between tool calls.
+   */
+  inboxState?: InboxDeliveryState;
+  note?: string;
 }
 
 export interface ClaudeAgentsEntry {
@@ -414,6 +431,23 @@ function socketPathExists(socketPath: string): boolean {
 }
 
 /**
+ * `claude agents --json` without shell:true.
+ * A resolved claude.exe is spawned directly. A claude.cmd or claude.bat file
+ * is passed to cmd.exe /d /s /c, which is how Windows runs a batch file without DEP0190.
+ */
+export function claudeAgentsSpawnPlan(opts?: {
+  platform?: NodeJS.Platform;
+  pathEnv?: string;
+  pathExt?: string;
+  exists?: (path: string) => boolean;
+  bin?: string;
+}): { command: string; args: string[]; shell: false; windowsVerbatimArguments?: boolean } {
+  const bin = opts?.bin ?? resolveClaudePath();
+  const command = resolveCommandOnPath(bin, opts);
+  return commandSpawnPlan(command, ['agents', '--json'], opts?.platform);
+}
+
+/**
  * Run `claude agents --json` and parse the output.
  */
 export function runClaudeAgents(): ClaudeAgentsEntry[] {
@@ -422,10 +456,12 @@ export function runClaudeAgents(): ClaudeAgentsEntry[] {
   }
 
   try {
-    const result = spawnSync('claude', ['agents', '--json'], {
+    const plan = claudeAgentsSpawnPlan();
+    const result = spawnSync(plan.command, plan.args, {
       encoding: 'utf8',
       timeout: 10000,
-      shell: platform() === 'win32',
+      shell: plan.shell,
+      windowsVerbatimArguments: plan.windowsVerbatimArguments,
     });
 
     if (result.error || result.status !== 0) {
@@ -632,9 +668,10 @@ export async function resolveSessionTarget(
 export async function sendToClaudeSession(
   target: string,
   text: string,
+  opts?: { watch?: boolean; pickupMs?: number },
 ): Promise<SendToClaudeResult> {
   if (useMock()) {
-    return mockSendToSession(target, text);
+    return mockSendToSession(target, text, opts);
   }
 
   // Resolve target with live preference
@@ -701,13 +738,7 @@ export async function sendToClaudeSession(
   // Connect and send
   try {
     await sendViaSocket(socketPath, text, authToken);
-    return {
-      sessionId: session.sessionId,
-      delivered: true,
-      socketPath,
-      live: true,
-      method: 'inbox',
-    };
+    return annotateDelivery(session, true, opts);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
 
@@ -889,7 +920,11 @@ export function clearMockAuthTokens(): void {
   mockAuthTokens.clear();
 }
 
-async function mockSendToSession(target: string, text: string): Promise<SendToClaudeResult> {
+async function mockSendToSession(
+  target: string,
+  text: string,
+  opts?: { watch?: boolean; pickupMs?: number },
+): Promise<SendToClaudeResult> {
   if (mockSendHandler) {
     return mockSendHandler(target, text);
   }
@@ -937,11 +972,39 @@ async function mockSendToSession(target: string, text: string): Promise<SendToCl
     };
   }
 
+  return annotateDelivery(session, true, opts);
+}
+
+async function annotateDelivery(
+  session: ClaudeLiveSession,
+  delivered: boolean,
+  opts?: { watch?: boolean; pickupMs?: number },
+): Promise<SendToClaudeResult> {
+  const before = classifyLivePhase(session.status ?? session.state);
+  let after = before;
+  if (opts?.watch && before !== 'mid_turn' && !useMock()) {
+    after = await watchInboxPhase({
+      sessionId: session.sessionId,
+      timeoutMs: opts.pickupMs ?? resolveInboxPickupMs(),
+      list: async () => {
+        const rows = await listClaudeLiveSessions();
+        return rows.map((row) => ({ sessionId: row.sessionId, status: row.status, state: row.state }));
+      },
+    });
+  }
+  const decision = decideInboxDelivery({
+    writeOk: delivered,
+    before,
+    after,
+    fallback: 'none',
+  });
   return {
     sessionId: session.sessionId,
-    delivered: true,
+    delivered,
     socketPath: session.messagingSocketPath,
     live: true,
     method: 'inbox',
+    inboxState: decision.inboxState,
+    note: decision.note,
   };
 }

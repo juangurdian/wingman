@@ -7,6 +7,17 @@ export type ProviderName = 'codex' | 'claude' | 'muse';
 
 export type SessionSource = 'wingman' | 'discovered';
 
+/**
+ * Which client surface a session lives in. Undefined (or 'cli') covers
+ * everything discovered today: a terminal CLI session, or a Codex thread
+ * reached only through a Wingman-spawned app-server. 'claude-desktop' marks a
+ * session that lives in the Claude desktop app's Code tab, which has no
+ * supported external injection path. Codex sessions use the separate
+ * `origin` field instead, since whether a thread originated in the desktop
+ * app is only knowable when the app-server itself reports it.
+ */
+export type SessionSurface = 'cli' | 'claude-desktop';
+
 export interface SessionSummary {
   id: string;
   provider: ProviderName;
@@ -39,6 +50,27 @@ export interface SessionSummary {
   liveStatus?: string;
   /** Registry session kind, when present. */
   kind?: string;
+  /** Age of the oldest pending approval, or null when nothing is waiting. */
+  pendingApprovalAgeMs?: number | null;
+  /** True when the oldest pending approval is older than the stall threshold (default 10 minutes). */
+  stalled_on_approval?: boolean;
+  /**
+   * ok: the approval list was read. unavailable: the read failed, so a missing
+   * stall flag is not a clean bill of health. unsupported: this provider has no approval API.
+   */
+  approval_lookup?: 'ok' | 'unavailable' | 'unsupported';
+  /** Which client surface this session lives in. Undefined means a terminal CLI session. */
+  surface?: SessionSurface;
+  /** True when the desktop app process itself is running (Windows only for now). */
+  appOpen?: boolean;
+  /** True when a per-turn desktop app process looks busy on this specific session. */
+  appBusy?: boolean;
+  /** The Claude desktop app's own local_<uuid> id for this session, when known. */
+  desktopSessionId?: string;
+  /** Codex: who/what created this thread, read only from the app-server's own data or set to 'wingman' when this process owns the thread. Never computed from unrelated data. */
+  origin?: string;
+  /** Codex: plain-language instructions for opening this thread in the app. */
+  openInAppHint?: string;
 }
 
 export interface TranscriptItem {
@@ -83,12 +115,19 @@ export interface SendMessageResult {
   permissionMode?: string;
   /** Plain-language resume/fork and terminal-visibility note. */
   note?: string;
+  /**
+   * Interactive inbox outcome.
+   * queued_not_started means the socket accepted the text and the session stayed idle.
+   */
+  inboxState?: 'started' | 'queued_not_started' | 'queued_mid_turn' | 'not_delivered';
 }
 
 export interface InterruptResult {
   sessionId: string;
   turnId?: string;
   status: string;
+  /** Extra context, e.g. why Wingman has no turn to interrupt in a desktop-app session. */
+  note?: string;
 }
 
 export interface CreateSessionResult {
@@ -273,6 +312,20 @@ export interface SendMessageOptions {
   binding?: 'new' | 'resume';
   /** Codex: send even when the thread is already loaded by another client. */
   force?: boolean;
+  /**
+   * Claude inbox: none reports queued_not_started when an idle session does not start.
+   * headless resumes only after that wait, and only when the session is still idle.
+   */
+  inboxFallback?: 'none' | 'headless';
+  /** How long to watch an idle interactive session for a turn to start. Default 5000. */
+  inboxPickupMs?: number;
+  /**
+   * Claude: required true to run a headless SDK resume against a session that
+   * lives only in the Claude Desktop app (no interactive inbox). Without it,
+   * sendMessage refuses with a status of not_delivered and a note explaining
+   * why, instead of silently resuming headless. Ignored by Codex.
+   */
+  headless?: boolean;
 }
 
 export interface SessionActivity {

@@ -9,6 +9,7 @@
     "wingman-doctor": "./dist/doctor.js",
     "wingman-tunnel": "./dist/tunnel.js",
     "wingman-task": "./dist/task.js",
+    "wingman-token": "./dist/token.js",
     "wingman-live-setup": "./dist/live-setup.js",
     "wingman-mcp": "./dist/pair.js"
   },

@@ -14,9 +14,10 @@ import {
   loadConfig,
   resolveHost,
   resolvePort,
+  safeErrorText,
   saveConfig,
 } from './config.js';
-import { buildWindowsTaskPlan } from './windows-task.js';
+import { buildWindowsTaskPlan, type TaskTunnel } from './windows-task.js';
 
 function pairScriptPath(): string {
   const running = process.argv[1] ?? '';
@@ -39,12 +40,28 @@ function ensureStableToken(): { created: boolean; path: string } {
   return { created: true, path };
 }
 
+function parseTunnel(argv: string[]): TaskTunnel {
+  const idx = argv.indexOf('--tunnel');
+  if (idx < 0) return 'none';
+  const value = argv[idx + 1];
+  if (value === 'tailscale' || value === 'quick' || value === 'none') return value;
+  throw new Error('--tunnel expects tailscale, quick, or none');
+}
+
+function parseBin(argv: string[]): string | undefined {
+  const idx = argv.indexOf('--tailscale-bin');
+  return idx >= 0 ? argv[idx + 1] : undefined;
+}
+
 function printHelp(): void {
-  console.log(`Usage: wingman-task <install|uninstall|print-xml|status>
+  console.log(`Usage: wingman-task <install|uninstall|print-xml|status> [--tunnel tailscale|quick|none] [--tailscale-bin PATH]
 
 install     Write the task XML. On Windows, register it with schtasks.
             The task runs at user logon and at boot, and restarts one minute after a crash.
             It starts wingman-pair with no --new-token, so the bearer token stays put.
+            --tunnel tailscale also passes --ensure-tunnel tailscale. Funnel --bg persists
+            in tailscaled, so the task only republishes the port when it is not active.
+            --tunnel quick starts a Cloudflare quick tunnel. That URL changes every start.
 uninstall   On Windows, delete the Wingman scheduled task.
 print-xml   Print the task XML.
 status      On Windows, query the Wingman task.
@@ -53,7 +70,13 @@ The token file is %USERPROFILE%\\.wingman\\config.json (or ~/.wingman/config.jso
 `);
 }
 
-export function installTask(opts?: { apply?: boolean; nodePath?: string; scriptPath?: string }): {
+export function installTask(opts?: {
+  apply?: boolean;
+  nodePath?: string;
+  scriptPath?: string;
+  tunnel?: TaskTunnel;
+  tailscaleBin?: string;
+}): {
   applied: boolean;
   xmlPath: string;
   plan: ReturnType<typeof buildWindowsTaskPlan>;
@@ -63,6 +86,8 @@ export function installTask(opts?: { apply?: boolean; nodePath?: string; scriptP
   const plan = buildWindowsTaskPlan({
     nodePath: opts?.nodePath ?? process.execPath,
     scriptPath: opts?.scriptPath ?? pairScriptPath(),
+    tunnel: opts?.tunnel,
+    tailscaleBin: opts?.tailscaleBin,
   });
   const dir = configDir();
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -93,13 +118,18 @@ async function main(): Promise<void> {
     const plan = buildWindowsTaskPlan({
       nodePath: process.execPath,
       scriptPath: pairScriptPath(),
+      tunnel: parseTunnel(process.argv.slice(2)),
+      tailscaleBin: parseBin(process.argv.slice(2)),
     });
     process.stdout.write(plan.xml);
     return;
   }
 
   if (cmd === 'install') {
-    const result = installTask();
+    const result = installTask({
+      tunnel: parseTunnel(process.argv.slice(2)),
+      tailscaleBin: parseBin(process.argv.slice(2)),
+    });
     console.log(
       JSON.stringify(
         {
@@ -109,6 +139,7 @@ async function main(): Promise<void> {
           tokenCreated: result.tokenCreated,
           command: `${result.plan.nodePath} "${result.plan.scriptPath}"`,
           passedNewToken: false,
+          tunnel: result.plan.tunnel,
           notes: result.plan.notes,
           reason: result.applied
             ? 'Registered with schtasks.'
@@ -153,7 +184,7 @@ const isMain =
 
 if (isMain) {
   main().catch((err) => {
-    console.error(err instanceof Error ? err.message : err);
+    console.error(safeErrorText(err, [loadConfig()?.token]));
     process.exit(1);
   });
 }
