@@ -29,6 +29,7 @@ import {
 } from './config.js';
 import { describeHeartbeat, heartbeatAgeMs, readHeartbeat } from './reachability.js';
 import { resolveCodexBinary, type CodexBinaryResolution } from './codex-binary.js';
+import { resolveClaudeDesktopDataDir, listClaudeDesktopSessions } from './claude-desktop.js';
 
 interface CheckResult {
   name: string;
@@ -472,6 +473,36 @@ export async function checkHostIdentity(): Promise<CheckResult> {
   };
 }
 
+/**
+ * Informational only: reports whether a Claude desktop app data directory was
+ * found and how many non-archived Code-tab sessions it indexes. Never fails
+ * the check; the desktop app is optional.
+ */
+export async function checkClaudeDesktop(): Promise<CheckResult> {
+  if (process.env.CLAUDE_DESKTOP_MOCK === '1' || process.env.CLAUDE_DESKTOP_MOCK === 'true') {
+    const count = listClaudeDesktopSessions().length;
+    return {
+      name: 'Claude desktop',
+      status: 'pass',
+      message: `CLAUDE_DESKTOP_MOCK=1 (${count} mock session(s), data dir check skipped)`,
+    };
+  }
+  const dataDir = resolveClaudeDesktopDataDir();
+  if (!dataDir) {
+    return {
+      name: 'Claude desktop',
+      status: 'pass',
+      message: 'Claude desktop app data not found (no Code-tab sessions to show).',
+    };
+  }
+  const count = listClaudeDesktopSessions().length;
+  return {
+    name: 'Claude desktop',
+    status: 'pass',
+    message: `Claude desktop app data found at ${dataDir} (${count} non-archived session(s)).`,
+  };
+}
+
 export async function runAllChecks(): Promise<CheckResult[]> {
   const checks = await Promise.all([
     checkNodeVersion(),
@@ -484,6 +515,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
     checkMuseBinary(),
     checkCodexModel(),
     checkHostIdentity(),
+    checkClaudeDesktop(),
   ]);
 
   return checks;

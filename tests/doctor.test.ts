@@ -10,6 +10,7 @@ describe('Doctor checks', () => {
     vi.stubEnv('CLAUDE_MOCK', '1');
     vi.stubEnv('CODEX_MOCK', '1');
     vi.stubEnv('MUSE_MOCK', '1');
+    vi.stubEnv('CLAUDE_DESKTOP_MOCK', '1');
   });
 
   afterEach(() => {
@@ -78,7 +79,7 @@ describe('Doctor checks', () => {
     const { runAllChecks } = await import('../src/doctor.js');
     const results = await runAllChecks();
 
-    expect(results.length).toBe(10);
+    expect(results.length).toBe(11);
     expect(results.map((r) => r.name)).toEqual([
       'Node.js version',
       'Config file',
@@ -90,6 +91,7 @@ describe('Doctor checks', () => {
       'Muse binary',
       'Codex model config',
       'Host identity',
+      'Claude desktop',
     ]);
   });
 
@@ -168,5 +170,42 @@ describe('checkCodexBinary source reporting', () => {
     expect(fakeSpawn).toHaveBeenCalled();
     expect(result.status).toBe('pass');
     expect(result.message).toContain('desktop app');
+  });
+});
+
+describe('checkClaudeDesktop', () => {
+  // Mocked at the module level (not via CLAUDE_DESKTOP_DATA_DIR/CLAUDE_DESKTOP_MOCK env)
+  // so this test is deterministic regardless of whether this machine happens to have a
+  // real Claude desktop install, and never reads real app data.
+  afterEach(() => {
+    vi.doUnmock('../src/claude-desktop.js');
+    vi.resetModules();
+  });
+
+  it('reports no Claude desktop data dir found', async () => {
+    vi.doMock('../src/claude-desktop.js', () => ({
+      resolveClaudeDesktopDataDir: () => undefined,
+      listClaudeDesktopSessions: () => [],
+    }));
+    vi.resetModules();
+    const { checkClaudeDesktop } = await import('../src/doctor.js');
+    const result = await checkClaudeDesktop();
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('not found');
+  });
+
+  it('reports the session count when a data dir is found', async () => {
+    vi.doMock('../src/claude-desktop.js', () => ({
+      resolveClaudeDesktopDataDir: () => 'C:\\fake\\Claude-Data\\claude_test',
+      listClaudeDesktopSessions: () => [
+        { desktopId: 'local_a', cliSessionId: 'a' },
+        { desktopId: 'local_b', cliSessionId: 'b' },
+      ],
+    }));
+    vi.resetModules();
+    const { checkClaudeDesktop } = await import('../src/doctor.js');
+    const result = await checkClaudeDesktop();
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('2');
   });
 });
