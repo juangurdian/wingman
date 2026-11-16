@@ -995,6 +995,7 @@ describe('tool handlers for Claude wait/steer/approvals parity', () => {
       model: 'from-call',
       fork_session: false,
       approval_timeout_ms: 1500,
+      headless: true,
     });
     expect(res.isError).toBeUndefined();
     expect(claude.lastSend?.opts).toMatchObject({
@@ -1005,6 +1006,7 @@ describe('tool handlers for Claude wait/steer/approvals parity', () => {
       model: 'from-call',
       forkSession: false,
       approvalTimeoutMs: 1500,
+      headless: true,
     });
     const body = JSON.parse(res.content[0]!.text);
     expect(body.attachedToTerminal).toBe(false);

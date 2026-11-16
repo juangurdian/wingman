@@ -56,6 +56,12 @@ import {
   type ClaudeLiveSession,
 } from '../claude-inbox.js';
 import { deliverInteractiveInbox, resolveInboxFallback, resolveInboxPickupMs } from '../inbox-pickup.js';
+import {
+  listClaudeDesktopSessions,
+  isClaudeDesktopAppRunning,
+  isClaudeDesktopTurnRunningFor,
+  type ClaudeDesktopSession,
+} from '../claude-desktop.js';
 import { ClaudePermissionBroker } from './claude-permissions.js';
 
 const TURN_ALREADY_ACTIVE = 'turn already active; use steer or interrupt';
@@ -388,7 +394,10 @@ export class ClaudeProvider implements SessionProvider {
           wingmanSessions.push(this.liveSessionToSummary(ls, hostId, hostName));
         }
       }
-      return this.sortAndFilterByState(wingmanSessions, stateFilter);
+      return this.sortAndFilterByState(
+        this.mergeDesktopSessions(wingmanSessions, hostId, hostName),
+        stateFilter,
+      );
     }
 
     const discovered = await this.discoverViaSdk();
@@ -412,7 +421,66 @@ export class ClaudeProvider implements SessionProvider {
         merged.push(this.liveSessionToSummary(ls, hostId, hostName));
       }
     }
-    return this.sortAndFilterByState(merged, stateFilter);
+    return this.sortAndFilterByState(this.mergeDesktopSessions(merged, hostId, hostName), stateFilter);
+  }
+
+  /**
+   * Merge Claude desktop app (Code tab) sessions into a session list, keyed
+   * by cliSessionId when known. An existing row (from SDK discovery or the
+   * live inbox) is enriched in place (new object, not mutated); otherwise a
+   * new row is appended. Returns a new array; never mutates `sessions`.
+   */
+  private mergeDesktopSessions(
+    sessions: SessionSummary[],
+    hostId: string | undefined,
+    hostName: string | undefined,
+  ): SessionSummary[] {
+    const desktopSessions = listClaudeDesktopSessions();
+    if (desktopSessions.length === 0) return sessions;
+
+    const appOpen = isClaudeDesktopAppRunning();
+    const result = [...sessions];
+    for (const ds of desktopSessions) {
+      const key = ds.cliSessionId ?? ds.desktopId;
+      const appBusy = ds.cliSessionId ? isClaudeDesktopTurnRunningFor(ds.cliSessionId) : false;
+      const idx = result.findIndex((s) => s.id === key);
+      if (idx >= 0) {
+        result[idx] = {
+          ...result[idx],
+          name: result[idx].name ?? ds.title,
+          cwd: result[idx].cwd ?? ds.cwd,
+          surface: 'claude-desktop',
+          appOpen,
+          appBusy,
+          desktopSessionId: ds.desktopId,
+        };
+      } else {
+        result.push({
+          id: key,
+          provider: 'claude',
+          cwd: ds.cwd,
+          name: ds.title,
+          status: 'idle',
+          updatedAt: ds.lastActivityAt ?? ds.lastTurnEdgeAt,
+          source: 'discovered',
+          hostId,
+          hostName,
+          live: false,
+          surface: 'claude-desktop',
+          appOpen,
+          appBusy,
+          desktopSessionId: ds.desktopId,
+        });
+      }
+    }
+    return result;
+  }
+
+  /** Translate a desktop local_<uuid> id to its Claude Code session id before any lookup below. */
+  private resolveId(id: string): string {
+    if (useMock()) return id; // CLAUDE_MOCK sessions never merge with desktop discovery.
+    const match = listClaudeDesktopSessions().find((d) => d.desktopId === id);
+    return match?.cliSessionId ?? id;
   }
 
   private liveSessionToSummary(
@@ -453,6 +521,7 @@ export class ClaudeProvider implements SessionProvider {
   }
 
   async getSession(sessionId: string): Promise<SessionDetail | null> {
+    sessionId = this.resolveId(sessionId);
     const sessions = await this.listSessions();
     const session = sessions.find((s) => s.id === sessionId);
     if (!session) return null;
@@ -553,6 +622,7 @@ export class ClaudeProvider implements SessionProvider {
   }
 
   async readTranscript(sessionId: string, limit = 50): Promise<Transcript> {
+    sessionId = this.resolveId(sessionId);
     if (useMock()) {
       const mock = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
       if (mock) {
@@ -596,6 +666,7 @@ export class ClaudeProvider implements SessionProvider {
     text: string,
     opts?: SendMessageOptions,
   ): Promise<SendMessageResult> {
+    sessionId = this.resolveId(sessionId);
     const binding = opts?.binding ?? 'resume';
     if (this.activeTurns.has(sessionId)) {
       throw new Error(TURN_ALREADY_ACTIVE);
@@ -603,12 +674,55 @@ export class ClaudeProvider implements SessionProvider {
     if (useMock()) {
       return this.sendMessageMock(sessionId, text, binding, opts);
     }
+    const cwd = loadRegistry().sessions.find((s) => s.sessionId === sessionId)?.cwd;
     if (binding !== 'new') {
       const delivered = await this.tryInboxDelivery(sessionId, text, opts);
       if (delivered) return delivered;
+
+      const desktopMatch = this.findDesktopMatch(sessionId);
+      if (desktopMatch && opts?.headless !== true) {
+        return this.desktopSendRefusal(sessionId, desktopMatch);
+      }
+      if (desktopMatch) {
+        const result = this.beginRealTurn(sessionId, text, cwd, binding, opts);
+        return { ...result, note: this.desktopHeadlessNote(desktopMatch) };
+      }
     }
-    const cwd = loadRegistry().sessions.find((s) => s.sessionId === sessionId)?.cwd;
     return this.beginRealTurn(sessionId, text, cwd, binding, opts);
+  }
+
+  private findDesktopMatch(sessionId: string): ClaudeDesktopSession | undefined {
+    return listClaudeDesktopSessions().find((d) => d.cliSessionId === sessionId);
+  }
+
+  private desktopSendRefusal(sessionId: string, match: ClaudeDesktopSession): SendMessageResult {
+    return {
+      sessionId,
+      requestedSessionId: sessionId,
+      status: 'not_delivered',
+      inboxState: 'not_delivered',
+      attachedToTerminal: false,
+      note:
+        'No supported way to deliver this message into the Claude Desktop app session' +
+        (match.title ? ` "${match.title}"` : '') +
+        '. The desktop app does not accept external text injection. ' +
+        'Open it in the Claude desktop app to continue the conversation, ' +
+        'or pass headless: true to run a headless resume instead ' +
+        '(the reply will not appear in the app until it is reopened).',
+    };
+  }
+
+  private desktopHeadlessNote(match: ClaudeDesktopSession): string {
+    const base =
+      'Headless resume of a Claude Desktop app session. ' +
+      'The reply will not appear in the app until it is reopened.';
+    if (match.cliSessionId && isClaudeDesktopTurnRunningFor(match.cliSessionId)) {
+      return (
+        `${base} Warning: the Claude Desktop app appears to be actively running a turn in this ` +
+        'session; a concurrent headless turn may conflict with it.'
+      );
+    }
+    return base;
   }
 
   /**
@@ -1075,6 +1189,7 @@ export class ClaudeProvider implements SessionProvider {
   }
 
   async interrupt(sessionId: string): Promise<InterruptResult> {
+    sessionId = this.resolveId(sessionId);
     if (useMock()) {
       const activeTurn = this.activeTurns.get(sessionId);
       const mock =
@@ -1105,6 +1220,20 @@ export class ClaudeProvider implements SessionProvider {
 
     const activeTurn = this.activeTurns.get(sessionId);
     if (!activeTurn) {
+      const desktopMatch = this.findDesktopMatch(sessionId);
+      if (desktopMatch) {
+        const busy = Boolean(desktopMatch.cliSessionId) && isClaudeDesktopTurnRunningFor(sessionId);
+        return {
+          sessionId,
+          turnId: undefined,
+          status: 'no_active_turn',
+          note: busy
+            ? 'No Wingman-tracked turn for this session. The Claude Desktop app appears to be ' +
+              'running a turn here; Wingman has no control channel into the desktop app and cannot interrupt it.'
+            : 'No Wingman-tracked turn for this session. Wingman cannot interrupt turns run directly ' +
+              'in the Claude Desktop app.',
+        };
+      }
       return { sessionId, turnId: undefined, status: 'no_active_turn' };
     }
 
@@ -1435,6 +1564,7 @@ export class ClaudeProvider implements SessionProvider {
     sessionId: string,
     meta: SetSessionMetaOptions,
   ): Promise<SetSessionMetaResult> {
+    sessionId = this.resolveId(sessionId);
     if (useMock()) {
       const mock = this.mockSessions.get(sessionId) ?? this.mockDiscovered.get(sessionId);
       if (!mock) {

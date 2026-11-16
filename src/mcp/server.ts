@@ -153,7 +153,10 @@ export async function startMcpServer(opts: StartServerOptions = {}): Promise<{
           'If the session stays idle, status is queued_not_started: some Claude Code builds wait for Enter and the wire protocol has no submit line. ' +
           'inbox_fallback "headless" resumes headless only when the session is still idle after the wait. A mid-turn session is never resumed headless. ' +
           'A second send_message while a Wingman turn is active is rejected; use steer or interrupt. ' +
-          'A headless Claude turn is not shown in an already-open interactive terminal.',
+          'A headless Claude turn is not shown in an already-open interactive terminal. ' +
+          'A Claude Desktop app session has no supported injection path: send_message refuses by ' +
+          'default with status not_delivered and a note explaining why, and headless: true runs a ' +
+          'headless resume instead, labeled as not visible in the app until it is reopened.',
         inputSchema: SendMessageSchema.shape,
       },
       async (args) => handlers.send_message(SendMessageSchema.parse(args)),

@@ -7,6 +7,15 @@ export type ProviderName = 'codex' | 'claude' | 'muse';
 
 export type SessionSource = 'wingman' | 'discovered';
 
+/**
+ * Which client surface a session lives in. Undefined (or 'cli') covers
+ * everything discovered today: a terminal CLI session, or a Codex thread
+ * reached only through a Wingman-spawned app-server with no known desktop
+ * origin. 'claude-desktop' / 'codex-desktop' mark sessions that live in the
+ * respective desktop app, which has no supported external injection path.
+ */
+export type SessionSurface = 'cli' | 'claude-desktop' | 'codex-desktop';
+
 export interface SessionSummary {
   id: string;
   provider: ProviderName;
@@ -48,6 +57,18 @@ export interface SessionSummary {
    * stall flag is not a clean bill of health. unsupported: this provider has no approval API.
    */
   approval_lookup?: 'ok' | 'unavailable' | 'unsupported';
+  /** Which client surface this session lives in. Undefined means a terminal CLI session. */
+  surface?: SessionSurface;
+  /** True when the desktop app process itself is running (Windows only for now). */
+  appOpen?: boolean;
+  /** True when a per-turn desktop app process looks busy on this specific session. */
+  appBusy?: boolean;
+  /** The Claude desktop app's own local_<uuid> id for this session, when known. */
+  desktopSessionId?: string;
+  /** Codex: who/what created this thread, only set when the app-server reports it or Wingman owns it. Never inferred. */
+  origin?: string;
+  /** Codex: plain-language instructions for opening this thread in the app. */
+  openInAppHint?: string;
 }
 
 export interface TranscriptItem {
@@ -103,6 +124,8 @@ export interface InterruptResult {
   sessionId: string;
   turnId?: string;
   status: string;
+  /** Extra context, e.g. why Wingman has no turn to interrupt in a desktop-app session. */
+  note?: string;
 }
 
 export interface CreateSessionResult {
@@ -294,6 +317,13 @@ export interface SendMessageOptions {
   inboxFallback?: 'none' | 'headless';
   /** How long to watch an idle interactive session for a turn to start. Default 5000. */
   inboxPickupMs?: number;
+  /**
+   * Claude: required true to run a headless SDK resume against a session that
+   * lives only in the Claude Desktop app (no interactive inbox). Without it,
+   * sendMessage refuses with a status of not_delivered and a note explaining
+   * why, instead of silently resuming headless. Ignored by Codex.
+   */
+  headless?: boolean;
 }
 
 export interface SessionActivity {

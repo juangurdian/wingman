@@ -108,6 +108,14 @@ export const SendMessageSchema = z.object({
     .max(60_000)
     .optional()
     .describe('How long to watch an idle interactive Claude session for a turn to start. Default 5000.'),
+  headless: z
+    .boolean()
+    .optional()
+    .describe(
+      'Claude: required true to run a headless SDK resume against a Claude Desktop app session. ' +
+        'Not shown in the desktop app until it is reopened. No effect on sessions reachable through ' +
+        'the normal interactive inbox, and ignored by Codex.',
+    ),
   ...claudeTurnFields,
   ...callerField,
 });
@@ -419,6 +427,7 @@ export function createToolHandlers(providers: ProviderRegistry, deps: ToolDeps =
           force: args.force,
           inboxFallback: args.inbox_fallback,
           inboxPickupMs: args.inbox_pickup_ms,
+          headless: args.headless,
         });
         return textResult(result);
       } catch (err) {
