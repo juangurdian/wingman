@@ -50,6 +50,7 @@ import {
   defaultCodexSocketPath,
   resolveCodexSocket,
   useCodexAttachMode,
+  resolveCodexRecentUpdateThresholdMs,
 } from '../config.js';
 
 type ConnectionMode = 'spawn' | 'attach';
@@ -202,18 +203,23 @@ export class CodexProvider implements SessionProvider {
       sortKey: 'updated_at',
     })) as { data?: Array<Record<string, unknown>> };
 
-    return (result.data ?? []).map((t) => ({
-      id: String(t.id ?? ''),
-      provider: 'codex' as const,
-      cwd: typeof t.cwd === 'string' ? t.cwd : undefined,
-      name: typeof t.name === 'string' ? t.name : undefined,
-      preview: typeof t.preview === 'string' ? t.preview : undefined,
-      status: summarizeStatus(t.status),
-      createdAt: typeof t.createdAt === 'number' ? t.createdAt : undefined,
-      updatedAt: typeof t.updatedAt === 'number' ? t.updatedAt : undefined,
-      hostId,
-      hostName,
-    }));
+    return (result.data ?? []).map((t) => {
+      const id = String(t.id ?? '');
+      return {
+        id,
+        provider: 'codex' as const,
+        cwd: typeof t.cwd === 'string' ? t.cwd : undefined,
+        name: typeof t.name === 'string' ? t.name : undefined,
+        preview: typeof t.preview === 'string' ? t.preview : undefined,
+        status: summarizeStatus(t.status),
+        createdAt: typeof t.createdAt === 'number' ? t.createdAt : undefined,
+        updatedAt: typeof t.updatedAt === 'number' ? t.updatedAt : undefined,
+        hostId,
+        hostName,
+        origin: resolveThreadOrigin(t, this.ownedThreads.has(id)),
+        openInAppHint: codexOpenInAppHint(id),
+      };
+    });
   }
 
   async getSession(sessionId: string): Promise<SessionDetail | null> {
@@ -332,6 +338,37 @@ export class CodexProvider implements SessionProvider {
     return { sessionId, provider: 'codex', items };
   }
 
+  /**
+   * Best-effort: if this thread's updatedAt (from thread/list, a field this
+   * client already reads elsewhere) is very recent and Wingman does not own
+   * the thread, warn that another client (possibly the desktop app) may be
+   * concurrently active. Never throws; returns undefined on any failure or
+   * when the data simply is not there.
+   */
+  private async checkRecentExternalUpdate(sessionId: string): Promise<string | undefined> {
+    if (this.ownedThreads.has(sessionId)) return undefined;
+    try {
+      const result = (await this.request('thread/list', {
+        cursor: null,
+        limit: 50,
+        sortKey: 'updated_at',
+      })) as { data?: Array<Record<string, unknown>> };
+      const match = (result.data ?? []).find((t) => String(t.id ?? '') === sessionId);
+      const updatedAt = match && typeof match.updatedAt === 'number' ? match.updatedAt : undefined;
+      if (updatedAt === undefined) return undefined;
+      const ageMs = Date.now() - updatedAt;
+      if (ageMs >= 0 && ageMs < resolveCodexRecentUpdateThresholdMs()) {
+        return (
+          `This thread was updated ${Math.round(ageMs / 1000)}s ago, possibly by another client. ` +
+          'Sending now may conflict with an in-progress turn there.'
+        );
+      }
+    } catch {
+      /* best effort only */
+    }
+    return undefined;
+  }
+
   async sendMessage(sessionId: string, text: string, opts?: { force?: boolean }): Promise<SendMessageResult> {
     if (useMock()) {
       const s = this.mockSessions.get(sessionId);
@@ -379,20 +416,22 @@ export class CodexProvider implements SessionProvider {
     }
 
     await this.ensureConnected();
+    let note: string | undefined;
     if (!this.ownedThreads.has(sessionId) && !opts?.force) {
       try {
         const loadedResult = (await this.request('thread/loaded/list', {})) as { data?: string[] };
         const loadedThreads = loadedResult.data ?? [];
         if (loadedThreads.includes(sessionId)) {
-          console.warn(
-            `[wingman] Thread ${sessionId} is already loaded by another client. ` +
-              'Sending may conflict with that client. Pass force to send anyway.',
-          );
+          note = 'Thread is already loaded by another client. Sending may conflict with that client.';
+          console.warn(`[wingman] ${note}`);
         }
       } catch {
         /* thread/loaded/list is not on every app-server build */
       }
     }
+    const recentWarning = await this.checkRecentExternalUpdate(sessionId);
+    if (recentWarning) note = note ? `${note} ${recentWarning}` : recentWarning;
+
     try {
       await this.request('thread/resume', { threadId: sessionId });
       this.ownedThreads.add(sessionId);
@@ -412,6 +451,7 @@ export class CodexProvider implements SessionProvider {
       sessionId,
       turnId,
       status: result.turn?.status ?? 'inProgress',
+      note,
     };
   }
 
@@ -1066,6 +1106,29 @@ export class CodexProvider implements SessionProvider {
     if (!this.transportOpen()) return;
     this.writeMessage({ method, params: params ?? {} });
   }
+}
+
+/**
+ * Thread origin, only ever read from a field the app-server itself returns
+ * (checked under a few plausible key names since the exact schema is
+ * unverified), or 'wingman' when Wingman created or has already sent to this
+ * thread. Never inferred or guessed beyond that.
+ */
+function resolveThreadOrigin(t: Record<string, unknown>, isOwnedByWingman: boolean): string | undefined {
+  const candidate =
+    (typeof t.originator === 'string' && t.originator) ||
+    (typeof t.source === 'string' && t.source) ||
+    (typeof t.createdBy === 'string' && t.createdBy) ||
+    undefined;
+  if (candidate) return candidate;
+  return isOwnedByWingman ? 'wingman' : undefined;
+}
+
+function codexOpenInAppHint(threadId: string): string {
+  return (
+    "Open this thread from Codex's Thread History in the app. " +
+    `A codex://threads/${threadId} deep link may also work, but Wingman has not verified it and will not open it for you.`
+  );
 }
 
 function summarizeStatus(status: unknown): string | undefined {

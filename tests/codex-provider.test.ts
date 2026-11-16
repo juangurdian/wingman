@@ -1,6 +1,57 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { hostname } from 'node:os';
 import { codexSocketClientOptions } from '../src/providers/codex.js';
+
+/**
+ * A synthetic `codex app-server` child process: a JSON-RPC line-reader over
+ * stdin/stdout, never a real process. Used to exercise CodexProvider's real
+ * (non-CODEX_MOCK) code paths without ever touching a real `codex` binary or
+ * real ~/.codex data.
+ */
+class FakeAppServerChild extends EventEmitter {
+  stdout = new EventEmitter() as EventEmitter & { pause: () => void; resume: () => void };
+  stderr = new EventEmitter();
+  stdin: { writable: boolean; write: (data: string) => void };
+  pid = 4242;
+
+  constructor(private readonly responses: Record<string, unknown>) {
+    super();
+    this.stdout.pause = () => {};
+    this.stdout.resume = () => {};
+    this.stdin = { writable: true, write: (data: string) => this.handleWrite(data) };
+  }
+
+  private handleWrite(data: string): void {
+    for (const line of data.split('\n')) {
+      if (!line.trim()) continue;
+      const msg = JSON.parse(line) as { id?: number; method?: string };
+      if (msg.id === undefined) continue; // notification, no response expected
+      const result = this.responses[msg.method ?? ''] ?? {};
+      queueMicrotask(() => {
+        this.stdout.emit('data', `${JSON.stringify({ id: msg.id, result })}\n`);
+      });
+    }
+  }
+}
+
+async function connectedCodexProvider(responses: Record<string, unknown>): Promise<{
+  provider: import('../src/providers/codex.js').CodexProvider;
+}> {
+  vi.doMock('../src/codex-binary.js', () => ({
+    resolveCodexBinary: () => ({ bin: 'fake-codex', source: 'not_found' }),
+  }));
+  vi.doMock('node:child_process', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:child_process')>();
+    return {
+      ...actual,
+      spawn: vi.fn(() => new FakeAppServerChild({ initialize: {}, ...responses })),
+    };
+  });
+  vi.resetModules();
+  const { CodexProvider } = await import('../src/providers/codex.js');
+  return { provider: new CodexProvider() };
+}
 
 describe('Codex socket client', () => {
   it('disables permessage-deflate so the app-server accepts the handshake', () => {
@@ -46,6 +97,71 @@ describe('Codex binary resolution in real mode', () => {
     const provider = new CodexProvider();
     await expect(provider.listSessions()).rejects.toThrow(/desktop app/);
     expect(fakeSpawn).toHaveBeenCalled();
+  });
+});
+
+describe('Codex thread origin, open-in-app hint, and recent-update warning', () => {
+  afterEach(() => {
+    vi.doUnmock('node:child_process');
+    vi.doUnmock('../src/codex-binary.js');
+    vi.resetModules();
+  });
+
+  it('labels a thread origin the app-server reports', async () => {
+    const { provider } = await connectedCodexProvider({
+      'thread/list': { data: [{ id: 't1', originator: 'chatgpt-desktop', updatedAt: 1 }] },
+    });
+    const sessions = await provider.listSessions();
+    expect(sessions[0].origin).toBe('chatgpt-desktop');
+  });
+
+  it('labels a Wingman-owned thread as wingman when the server reports no origin', async () => {
+    const { provider } = await connectedCodexProvider({
+      'thread/start': { thread: { id: 't2' } },
+      'thread/list': { data: [{ id: 't2', updatedAt: 1 }] },
+      'turn/start': { turn: { id: 'turn1', status: 'inProgress' } },
+    });
+    await provider.createSession({ cwd: '/x' });
+    const sessions = await provider.listSessions();
+    expect(sessions.find((s) => s.id === 't2')?.origin).toBe('wingman');
+  });
+
+  it('includes a non-empty open-in-app hint for every codex session', async () => {
+    const { provider } = await connectedCodexProvider({
+      'thread/list': { data: [{ id: 't1', updatedAt: 1 }] },
+    });
+    const sessions = await provider.listSessions();
+    expect(sessions[0].openInAppHint).toMatch(/Thread History/);
+  });
+
+  it('does not throw when a thread/list row omits updatedAt or id', async () => {
+    const { provider } = await connectedCodexProvider({
+      'thread/list': { data: [{}] },
+    });
+    await expect(provider.listSessions()).resolves.not.toThrow();
+  });
+
+  it('warns on send when the thread updated very recently by another client', async () => {
+    const { provider } = await connectedCodexProvider({
+      'thread/resume': { thread: { id: 't3' } },
+      'thread/list': { data: [{ id: 't3', updatedAt: Date.now() - 1000 }] },
+      'turn/start': { turn: { id: 'turn1', status: 'inProgress' } },
+    });
+    const result = await provider.sendMessage('t3', 'hello');
+    expect(result.note).toContain('updated');
+    expect(result.note).toContain('another client');
+  });
+
+  it('does not warn when the thread is already owned by Wingman', async () => {
+    const { provider } = await connectedCodexProvider({
+      'thread/start': { thread: { id: 't4' } },
+      'thread/resume': { thread: { id: 't4' } },
+      'thread/list': { data: [{ id: 't4', updatedAt: Date.now() - 1000 }] },
+      'turn/start': { turn: { id: 'turn1', status: 'inProgress' } },
+    });
+    await provider.createSession({ cwd: '/x' });
+    const result = await provider.sendMessage('t4', 'hello');
+    expect(result.note).toBeUndefined();
   });
 });
 

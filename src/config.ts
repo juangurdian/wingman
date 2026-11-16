@@ -330,6 +330,15 @@ export function useCodexAttachMode(): boolean {
   return Boolean(process.env.WINGMAN_CODEX_SOCKET?.trim());
 }
 
+/** How recently a thread's updatedAt has to be for sendMessage to warn about a possible concurrent client. */
+export const CODEX_RECENT_UPDATE_MS_DEFAULT = 5000;
+
+export function resolveCodexRecentUpdateThresholdMs(): number {
+  const env = process.env.WINGMAN_CODEX_RECENT_UPDATE_MS?.trim();
+  if (env && /^\d+$/.test(env)) return Number(env);
+  return CODEX_RECENT_UPDATE_MS_DEFAULT;
+}
+
 export function codexSocketExists(socketPath?: string): boolean {
   const path = socketPath || defaultCodexSocketPath();
   try {
