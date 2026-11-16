@@ -27,7 +27,7 @@ export function configDir(): string {
   return join(homedir(), '.wingman');
 }
 
-/** Legacy session-bridge config dir — still read as fallback. */
+/** Legacy session-bridge config dir, still read as fallback. */
 export function legacyConfigDir(): string {
   return join(homedir(), '.session-bridge');
 }
@@ -265,7 +265,7 @@ export function isHealthzAuthFree(): boolean {
 
 /**
  * Models that historically required API access (not ChatGPT subscription).
- * This is an advisory list only — Wingman does NOT recommend specific fallback models.
+ * This is an advisory list only. Wingman does NOT recommend specific fallback models.
  * Users should keep their chosen model if they have API access, or let Codex pick
  * its current default by unsetting `model` in ~/.codex/config.toml.
  */
@@ -282,7 +282,7 @@ export const CODEX_API_ONLY_MODELS = [
  * Resolve Codex model to use for new sessions.
  * Priority: explicit arg > WINGMAN_CODEX_MODEL env > undefined (use Codex default/config)
  * 
- * By default (undefined), Wingman does NOT override the model — it uses whatever
+ * By default (undefined), Wingman does NOT override the model; it uses whatever
  * is configured in ~/.codex/config.toml or Codex's built-in defaults.
  */
 export function resolveCodexModel(explicit?: string): string | undefined {
@@ -294,7 +294,7 @@ export function resolveCodexModel(explicit?: string): string | undefined {
 
 /**
  * Check if a model historically required API access (not ChatGPT subscription).
- * This is advisory only — the list may be outdated as models evolve.
+ * This is advisory only. The list may be outdated as models evolve.
  */
 export function isCodexModelApiOnly(model: string): boolean {
   const normalized = model.toLowerCase().trim();

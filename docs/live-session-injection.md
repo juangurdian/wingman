@@ -11,8 +11,8 @@
 | 3 | Claude Code Terminal | `--bg` + attach | **HIGH** | Background sessions can be controlled |
 | 4 | Codex TUI | Shared daemon mode | **MEDIUM** | IMPLEMENTED - requires manual daemon setup |
 | 5 | Claude Code Terminal | `--remote-control` | **MEDIUM** | Requires claude.ai subscription |
-| 6 | Codex Desktop (ChatGPT) | Manual daemon setup | **LOW** | ChatGPT app doesn't use daemon |
-| 7 | Claude Desktop | Unknown IPC | **UNKNOWN** | Needs more investigation |
+| 6 | Codex Desktop (ChatGPT) | Shared `~/.codex` thread history | **MEDIUM (discovery/read), NONE (live injection)** | IMPLEMENTED for discovery and send via a Wingman-spawned app-server. Cannot attach to turns the desktop app itself is running. |
+| 7 | Claude Desktop | Session index on disk, no live inbox | **MEDIUM (discovery/read), NONE (live injection)** | IMPLEMENTED for discovery. `send_message` requires an explicit `headless: true` opt-in and is not visible in the app until reopened. |
 | 8 | Any | OS-level typing automation | **LAST RESORT** | Fragile, platform-specific |
 
 ---
@@ -203,19 +203,23 @@ codex agents --remote unix://
 
 ### The Problem
 
-The ChatGPT desktop app does **NOT** use daemon mode. It spawns its own `codex app-server` processes as stdio children. There is no socket to connect to.
+The ChatGPT desktop app does **NOT** use daemon mode. It spawns its own `codex app-server` processes as stdio children, with no listening socket. There is nothing to attach to directly, and Wingman does not try.
 
 ### The `~/.codex/ipc/ipc.sock` Socket
 
 This socket EXISTS but is for **IDE context only** (VS Code/Cursor extension communication). It uses a different protocol and does NOT expose thread management.
 
-### Possible Workaround (UNTESTED)
+### What Wingman does today
+
+A Wingman-spawned `codex app-server` shares the same `~/.codex` directory (`sessions/`, `state_*.sqlite`, `session_index.jsonl`) that the desktop app writes to, so `thread/list`, `thread/read`, `thread/resume`, and `turn/start` work against the same threads the desktop app shows, read-only discovery included. There is a real risk of two writers if the desktop app currently has a thread loaded and running a turn in it; `send_message` warns in its `note` when a thread's `updatedAt` looks very recent and this process does not already own it (`WINGMAN_CODEX_RECENT_UPDATE_MS`, default 5000ms). `origin` on a session is set only when the app-server itself reports who created the thread (field name unverified; checked defensively), or `"wingman"` when this process created or last sent to it. `openInAppHint` gives a plain-language instruction for opening a thread in the app; a `codex://threads/<id>` deep link is mentioned as an unverified possibility only, never opened automatically.
+
+### Possible future workaround (UNTESTED)
 
 If the user manually starts a daemon:
 1. `codex app-server daemon start`
 2. ChatGPT desktop app might use it (unlikely - it probably spawns its own anyway)
 
-This needs testing on a real machine.
+This needs testing on a real machine, and is unrelated to the read/send support above, which does not require a daemon.
 
 ### Fallback: AppleScript/Automation (LAST RESORT)
 
@@ -245,20 +249,13 @@ end tell
 
 ## 4. Claude Desktop (Rank 6)
 
-### Status: UNKNOWN
+### Status: discovery implemented, live injection not possible
 
-Claude Desktop is the GUI companion to Claude Code. Investigation needed:
+The desktop app's Code tab indexes its own sessions at `<dataDir>/claude-code-sessions/<accountUuid>/<orgUuid>/local_<uuid>.json` (Windows MSIX data dir confirmed at `%LOCALAPPDATA%\Claude-Data\claude_<id>`; other platforms are unverified candidates). Each file's `cliSessionId` is the Claude Code session id whose transcript lives at `~/.claude/projects/<slug>/<cliSessionId>.jsonl`, which is how Wingman merges a desktop session into the same row the Agent SDK discovers.
 
-- Does it have an IPC socket?
-- Does it support URL schemes?
-- Can it be controlled via AppleScript?
-- Does it integrate with Claude Code's session management?
+The desktop app does not keep a `claude` CLI process per session and does not write a `~/.claude/sessions/<pid>.json` registry entry for them, so these sessions are never "live" for the cross-session inbox in section 5. It spawns its own bundled CLI per turn from `<dataDir>\claude-code\<version>\<hash>\claude.exe`. There is no `--channels` flag passed by the app, no public remote-control bridge reachable from a headless SDK call, and `claude://code/{id}` deep links only accept bridge ids the app issues itself. **There is no supported way for Wingman to inject text into an open desktop session.**
 
-### What We Know
-
-- Claude Desktop creates git worktrees (mentioned in changelog)
-- It has some integration with Claude Code
-- May share session data
+Given that, `send_message` against one of these sessions returns `status: "not_delivered"` with a note by default, and only runs a headless SDK resume when the caller passes `headless: true`, clearly labeled as not visible in the app until it is reopened. `appOpen` (the desktop app process is running) and `appBusy` (a per-turn `claude.exe` process looks active for that session) are read from a short-lived, read-only Windows process enumeration, never used to justify any injection attempt. The large `promptAppendSnapshot`, `toolSurfaceSnapshot`, `remoteMcpServersConfig`, and `enabledMcpTools` fields in the session index files are never read into anything Wingman returns or logs.
 
 ---
 

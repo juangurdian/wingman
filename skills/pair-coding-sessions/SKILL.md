@@ -18,7 +18,7 @@ Use this skill to connect **Grok Bot** to **Codex** or **Claude Code** sessions 
 
 - Node 20+
 - This repo built/installed (`npm install` in the Wingman checkout)
-- For **real** Codex: `codex` on PATH (uses `codex app-server`, **not** `codex mcp-server`)
+- For **real** Codex: `codex` resolved automatically (`CODEX_BIN` env, then PATH, then the Codex desktop app's bundled binary); uses `codex app-server`, **not** `codex mcp-server`
 - For **real** Claude: `@anthropic-ai/claude-agent-sdk` is bundled (no separate install needed)
 - A tunnel tool: `cloudflared` or Tailscale Funnel (Grok cannot hit `127.0.0.1`)
 
@@ -100,12 +100,21 @@ Sessions now include `hostId` and `hostName` fields so MCP clients can tell whic
 
 Sessions include a `source` field: `'wingman'` (created via Wingman) or `'discovered'` (found via SDK). Set `CLAUDE_DISCOVER=0` to disable discovery. This is not TTY hijacking. It reads session files on disk, not terminal processes.
 
+### Desktop app sessions
+
+`list_sessions` also includes sessions that live in the Claude or Codex/ChatGPT desktop apps, marked honestly instead of being treated like a normal terminal session:
+
+- **Claude Desktop**: rows carry `surface: "claude-desktop"`, `appOpen`, and `appBusy`. There is no supported way to inject text into one of these sessions: `send_message` returns `status: "not_delivered"` with a note by default. Pass `headless: true` to run a headless SDK resume instead; the reply will not show up in the app until it is reopened, and the note warns if the app looks busy on that session. `interrupt` explains the same limitation instead of a silent no-op. `get_session` / `read_transcript` / `export_transcript` accept either the Claude Code session id or the desktop app's own `local_<uuid>` id.
+- **Codex / ChatGPT Desktop**: a Wingman-spawned app-server reads the same `~/.codex` thread history the desktop app writes to, so discovery and `send_message` work. Sessions carry `origin` (only when the app-server itself reports it, or `"wingman"` when this process owns the thread) and `openInAppHint` (a plain-language instruction, never an auto-opened link). `send_message` warns in its note when a thread changed very recently and this process does not own it, since that usually means another client is active.
+
+Never open a `claude://` or `codex://` link automatically; any deep link mentioned in a hint is informational only.
+
 ## Mock vs real
 
 | Provider | Mode | How | Behavior |
 |----------|------|-----|----------|
 | Codex | Mock | `CODEX_MOCK=1` | In-memory sessions; pair works offline |
-| Codex | Real | unset mock, `codex` on PATH | JSON-RPC to `codex app-server` |
+| Codex | Real | unset mock, `codex` resolved via `CODEX_BIN`, PATH, or the desktop app bundle | JSON-RPC to `codex app-server` |
 | Claude | Mock | `CLAUDE_MOCK=1` | In-memory sessions + mock discovered sessions |
 | Claude | Real | unset mock | Agent SDK spawns Claude subprocess |
 
@@ -130,6 +139,8 @@ If session creation fails due to model access, either ensure you have the requir
 | `WINGMAN_CLAUDE_PERMISSION_MODE` | `default` | Permission mode passed to the Agent SDK |
 | `WINGMAN_CLAUDE_MODEL` | unset | Optional model override. Unset inherits the session model |
 | `WINGMAN_CLAUDE_APPROVAL_TIMEOUT_MS` | `120000` | Deny an unanswered Claude permission prompt |
+| `CLAUDE_DESKTOP_DATA_DIR` | auto-detected | Claude desktop app data directory override |
+| `CLAUDE_DESKTOP_MOCK` | `0` | In-memory mock Claude desktop session discovery (tests only) |
 
 ## Session scope
 
@@ -137,8 +148,9 @@ Wingman manages sessions it creates. It does **not** hijack or attach to:
 - Arbitrary `codex` processes you already have running
 - Claude Code TTYs you opened in another terminal
 - Any interactive shell sessions
+- A live turn running inside the Claude or Codex desktop app itself
 
-If you want Grok to control a session, create it through Wingman's `create_session` tool.
+Desktop app sessions are discoverable and readable, but injecting text into one requires an explicit `headless: true` opt-in on `send_message` (Claude) and is never silent. If you want Grok to control a session end to end, create it through Wingman's `create_session` tool.
 
 ## Safety
 

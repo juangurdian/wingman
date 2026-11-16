@@ -111,6 +111,7 @@ Docs: [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [Claude A
 - Bridge Grok Bot ↔ local Codex threads via app-server once tunneled
 - Bridge Grok Bot ↔ local Claude Code sessions via Agent SDK once tunneled
 - **Discover existing Claude sessions** via SDK's `listSessions()` (sessions you created via `claude` CLI or Claude Code IDE)
+- **See Claude Desktop app sessions.** Non-archived Code-tab sessions from the Claude desktop app show up in `list_sessions` (marked `surface: "claude-desktop"`), readable by their Claude Code session id or the desktop app's own `local_<uuid>` id
 - Resume discovered sessions by ID. The SDK reads session state from `~/.claude/projects/`
 - Send messages to sessions asynchronously (returns `accepted` quickly; turn runs in background)
 - Check session status (idle vs running) via `get_session` or `list_sessions`
@@ -126,6 +127,8 @@ Docs: [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [Claude A
 - Interrupt a discovered session reliably unless Wingman started the current turn (no active query handle)
 - Auto-approve sandbox prompts (approvals still belong to the local agent client)
 - Use legacy `codex mcp-server` (removed / not used here)
+- **Inject text into a Claude Desktop app session.** The desktop app has no `--channels` flag and no external messaging path. `send_message` refuses by default with a clear note; pass `headless: true` to run a headless resume instead, which will not show up in the app until it is reopened
+- **Attach to the Codex/ChatGPT desktop app's own app-server.** It runs its own `codex app-server` as a child of the desktop app with no listening socket. A Wingman-spawned app-server can still read the same `~/.codex` thread history, but cannot attach to turns the desktop app itself is running
 
 ## Staying up, and keeping the token quiet
 
@@ -190,11 +193,11 @@ flowchart LR
 
 | Tool | Args | Notes |
 |------|------|--------|
-| `list_sessions` | `provider?`: `codex` \| `claude`, `state?`: `live` \| `past` \| `all` | Lists sessions. `state` is Claude inbox liveness (a running registry pid). Live sessions sort first. Each row includes `pendingApprovalAgeMs` and `stalled_on_approval` (default threshold 10 minutes, `WINGMAN_APPROVAL_STALL_MS`). |
-| `get_session` | `provider`, `session_id` | Get detailed session info including status (`idle` / `running`), tags, and host identity |
-| `read_transcript` | `provider`, `session_id`, `limit?` | Recent messages (newest at end) |
-| `send_message` | `provider`, `session_id`, `text`, `model?`, `max_turns?`, `permission_mode?`, `allowed_tools?`, `disallowed_tools?`, `fork_session?`, `approval_timeout_ms?`, `force?`, `inbox_fallback?`, `inbox_pickup_ms?` | Codex: `turn/start` (warns if another client has the thread loaded unless `force`). Claude live sessions are written to the inbox. If the session stays idle, status is `queued_not_started`. `inbox_fallback: "headless"` resumes headless only after that wait, and only while the session is idle. A second send during an active Wingman turn is rejected. |
-| `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`. Claude: aborts the Wingman-owned headless query (`AbortController` and `Query.interrupt()`). |
+| `list_sessions` | `provider?`: `codex` \| `claude`, `state?`: `live` \| `past` \| `all` | Lists sessions. `state` is Claude inbox liveness (a running registry pid). Live sessions sort first. Each row includes `pendingApprovalAgeMs` and `stalled_on_approval` (default threshold 10 minutes, `WINGMAN_APPROVAL_STALL_MS`). Claude Desktop app sessions appear with `surface: "claude-desktop"`, `appOpen`, and `appBusy`. Codex sessions include `origin` (only when the app-server reports it) and `openInAppHint`. |
+| `get_session` | `provider`, `session_id` | Get detailed session info including status (`idle` / `running`), tags, and host identity. Accepts a Claude Desktop app's `local_<uuid>` id in place of the Claude Code session id. |
+| `read_transcript` | `provider`, `session_id`, `limit?` | Recent messages (newest at end). Accepts a Claude Desktop app's `local_<uuid>` id in place of the Claude Code session id. |
+| `send_message` | `provider`, `session_id`, `text`, `model?`, `max_turns?`, `permission_mode?`, `allowed_tools?`, `disallowed_tools?`, `fork_session?`, `approval_timeout_ms?`, `force?`, `inbox_fallback?`, `inbox_pickup_ms?`, `headless?` | Codex: `turn/start` (warns if another client has the thread loaded unless `force`, or if the thread changed very recently). Claude live sessions are written to the inbox. If the session stays idle, status is `queued_not_started`. `inbox_fallback: "headless"` resumes headless only after that wait, and only while the session is idle. A Claude Desktop app session has no inbox and no supported injection path: the call returns `status: "not_delivered"` with a note, unless `headless: true` is passed, in which case it runs a headless resume and labels it as not visible in the app until reopened. A second send during an active Wingman turn is rejected. |
+| `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`. Claude: aborts the Wingman-owned headless query (`AbortController` and `Query.interrupt()`). On a Claude Desktop app session with no Wingman-tracked turn, returns a note explaining Wingman has no control channel into the desktop app, instead of a silent no-op. |
 | `create_session` | `provider`, `cwd?`, `prompt?`, `name?`, `tags?`, `model?`, `max_turns?`, `permission_mode?`, `allowed_tools?`, `disallowed_tools?`, `approval_timeout_ms?` | Codex: `thread/start` with optional model override. Claude: new headless session. Model is optional for both. |
 | `wait_turn` | `provider`, `session_id`, `timeout_ms?`, `poll_interval_ms?` | Wait for a Codex or Claude turn to complete, fail, or time out. Returns early while a permission prompt is waiting. |
 | `steer` | `provider`, `session_id`, `text` | Add guidance to an in-flight turn. Codex: `turn/steer`. Claude: queues a user message on the active headless query. |
@@ -291,6 +294,16 @@ For **Codex sessions**, `send_message` blocks until `turn/start` returns (typica
 
 Codex can attach to a shared app-server socket (`WINGMAN_CODEX_SOCKET=auto` or a path) instead of spawning its own process. The WebSocket client disables permessage-deflate. If the socket is missing, Wingman spawns a private app-server and logs the reason. `wingman-live-setup` prints the daemon and TUI steps. See [Codex shared server](docs/codex-shared-server.md).
 
+### Desktop app sessions
+
+Sessions that live only in the Claude or Codex/ChatGPT desktop app, not a terminal, are visible but handled honestly instead of being silently forked headless.
+
+**Claude Desktop.** The desktop app's Code tab keeps its own session index on disk; it does not run a `claude` CLI process per session and does not write a `~/.claude/sessions/<pid>.json` registry entry, so these sessions are never "live" for inbox purposes. `list_sessions` merges them into the normal session list keyed by their Claude Code session id, marked `surface: "claude-desktop"`, with `appOpen` (the desktop app process is running) and `appBusy` (a per-turn process looks active for that session), both Windows-only for now. `send_message` to one of these sessions returns `status: "not_delivered"` with a note, unless you pass `headless: true`, which runs a headless SDK resume and labels the result as not visible in the app until it is reopened (with a warning if the app looks busy on that session). `interrupt` explains the same limitation instead of a bare `no_active_turn`.
+
+**Codex / ChatGPT Desktop.** The desktop app runs its own `codex app-server` as a child process with no listening socket, so Wingman cannot attach to it directly. A Wingman-spawned app-server shares the same `~/.codex` thread history, so `list_sessions`, `read_transcript`, and `send_message` work against the same threads the app shows. `origin` is set only when the app-server itself reports who created a thread, or to `"wingman"` when this process created or last sent to it; Wingman never guesses an origin. `openInAppHint` is a plain-language instruction for opening a thread in the app (no `codex://` link is ever opened automatically). `send_message` adds a warning to its `note` when a thread changed very recently and Wingman does not own it, since that usually means another client, possibly the desktop app, is concurrently active.
+
+Codex binary resolution: `CODEX_BIN` env, then `codex` on `PATH`, then the Codex desktop app's own bundled binary (`Get-AppxPackage OpenAI.Codex` on Windows; a static candidate path on macOS, unverified). `wingman-doctor` reports which one resolved it.
+
 ### interrupt behavior
 
 For **Claude sessions**, `interrupt` works when Wingman owns the active turn (you called `send_message` or `create_session` through Wingman for the current turn). It aborts the query, calls `Query.interrupt()` on the streaming headless process, and denies any permission prompt that is still open. Returns `{ status: "interrupted", turnId }` on success, or `{ status: "no_active_turn" }` if the session is idle.
@@ -385,10 +398,11 @@ Example approval flow:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CODEX_MOCK` | unset | Set to `1` for in-memory mock mode |
-| `CODEX_BIN` | `codex` | Path to Codex CLI binary |
+| `CODEX_BIN` | auto-detected | Path to Codex CLI binary. Overrides auto-detection (PATH, then the Codex desktop app's bundled binary). |
 | `CODEX_APP_SERVER_ARGS` | `app-server` | Args passed to Codex binary |
 | `CODEX_RPC_TIMEOUT_MS` | `60000` | JSON-RPC timeout |
 | `WINGMAN_CODEX_MODEL` | unset | Override Codex model for Wingman sessions (optional; defaults to Codex config/defaults) |
+| `WINGMAN_CODEX_RECENT_UPDATE_MS` | `5000` | How recent a thread's `updatedAt` has to be for `send_message` to warn about a possible concurrent client |
 
 ### Claude
 
@@ -404,6 +418,8 @@ Example approval flow:
 | `WINGMAN_CLAUDE_DISALLOWED_TOOLS` | unset | Comma-separated Claude tools removed from the session |
 | `WINGMAN_CLAUDE_MODEL` | unset | Optional model override. Unset inherits the session model, then Claude Code's own default. Never set this to pin an old model by accident. |
 | `WINGMAN_CLAUDE_APPROVAL_TIMEOUT_MS` | `120000` | Deny a Claude permission prompt that is not resolved in time |
+| `CLAUDE_DESKTOP_DATA_DIR` | auto-detected | Claude desktop app data directory. Overrides auto-detection (`%LOCALAPPDATA%\Claude-Data\claude_*` on Windows MSIX builds; other platforms are unverified candidates). |
+| `CLAUDE_DESKTOP_MOCK` | unset | Set to `1` for in-memory mock Claude desktop session discovery (tests only) |
 
 The Claude provider uses the bundled Agent SDK binary automatically. No separate `claude` CLI install is required unless you override `pathToClaudeCodeExecutable` in code.
 
@@ -442,6 +458,10 @@ Wingman can also **discover existing Claude Code sessions** via the Agent SDK's 
 
 Set `CLAUDE_DISCOVER=0` to disable discovery and only show Wingman-created sessions.
 
+### Claude desktop discovery
+
+Wingman also reads the Claude desktop app's own session index (non-archived Code-tab sessions only) and merges it into `list_sessions`, keyed by the Claude Code session id when the desktop app has run a turn in that session. These rows are marked `surface: "claude-desktop"`. Only a documented allowlist of fields is read from the desktop app's session files (id, titles, paths, timestamps, model and permission settings); larger snapshot and MCP configuration fields in those files are never read into anything Wingman returns or logs. See [Desktop app sessions](#desktop-app-sessions) for how `send_message` and `interrupt` behave for these sessions.
+
 ### SessionSummary fields
 
 Sessions returned by `list_sessions` include:
@@ -453,6 +473,12 @@ Sessions returned by `list_sessions` include:
 | `tags` | `string[]?` | User-set tags for categorization/filtering |
 | `gitBranch` | `string?` | Git branch at end of session (discovered) |
 | `tag` | `string?` | Legacy single tag (discovered sessions only) |
+| `surface` | `'cli' \| 'claude-desktop' \| 'codex-desktop'?` | Which client surface the session lives in. Undefined means a terminal CLI session. |
+| `appOpen` | `boolean?` | True when the desktop app process itself is running (Windows only for now) |
+| `appBusy` | `boolean?` | True when a per-turn desktop app process looks busy on this specific session |
+| `desktopSessionId` | `string?` | The Claude desktop app's own `local_<uuid>` id for this session |
+| `origin` | `string?` | Codex only: who/what created the thread, set only when the app-server reports it or Wingman owns it |
+| `openInAppHint` | `string?` | Codex only: plain-language instructions for opening the thread in the app |
 
 ### Claude session storage
 
@@ -542,7 +568,8 @@ Checks:
 - Config file (`~/.wingman/config.json`)
 - Port availability (3847 by default)
 - Claude Agent SDK availability (unless `CLAUDE_MOCK=1`)
-- Codex binary on PATH (unless `CODEX_MOCK=1`)
+- Codex binary (unless `CODEX_MOCK=1`): checks `CODEX_BIN`, `PATH`, and the Codex desktop app's bundled binary, and reports which one resolved it
+- Claude desktop app data (informational): whether a data directory was found and how many non-archived Code-tab sessions it indexes
 
 The doctor prints clear next steps if any check fails.
 
