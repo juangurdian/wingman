@@ -17,6 +17,38 @@ describe('Codex socket client', () => {
   });
 });
 
+describe('Codex binary resolution in real mode', () => {
+  afterEach(() => {
+    vi.doUnmock('node:child_process');
+    vi.doUnmock('../src/codex-binary.js');
+    vi.resetModules();
+  });
+
+  it('includes the resolution source and desktop app guidance when the app-server fails to spawn', async () => {
+    // Guards against ever touching a real codex binary / real ~/.codex data:
+    // `fakeSpawn` must be the thing that actually runs. If module caching from
+    // this file's earlier static import let the real `spawn` through instead,
+    // `fakeSpawn` is never called and the assertion on it fails loudly instead
+    // of silently falling through to a real process.
+    const fakeSpawn = vi.fn(() => {
+      throw new Error('spawn nonexistent-codex-xyz ENOENT');
+    });
+    vi.doMock('../src/codex-binary.js', () => ({
+      resolveCodexBinary: () => ({ bin: 'nonexistent-codex-xyz', source: 'not_found' }),
+    }));
+    vi.doMock('node:child_process', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:child_process')>();
+      return { ...actual, spawn: fakeSpawn };
+    });
+    vi.resetModules();
+
+    const { CodexProvider } = await import('../src/providers/codex.js');
+    const provider = new CodexProvider();
+    await expect(provider.listSessions()).rejects.toThrow(/desktop app/);
+    expect(fakeSpawn).toHaveBeenCalled();
+  });
+});
+
 describe('CodexProvider mock mode - wait/steer/approvals', () => {
   beforeEach(() => {
     vi.stubEnv('CODEX_MOCK', '1');

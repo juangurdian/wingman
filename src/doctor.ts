@@ -28,6 +28,7 @@ import {
   weakTokenReason,
 } from './config.js';
 import { describeHeartbeat, heartbeatAgeMs, readHeartbeat } from './reachability.js';
+import { resolveCodexBinary, type CodexBinaryResolution } from './codex-binary.js';
 
 interface CheckResult {
   name: string;
@@ -233,6 +234,19 @@ export async function checkClaudeSdk(): Promise<CheckResult> {
   }
 }
 
+function describeCodexBinarySource(resolution: CodexBinaryResolution): string {
+  switch (resolution.source) {
+    case 'env':
+      return 'CODEX_BIN';
+    case 'path':
+      return 'PATH';
+    case 'desktop-app':
+      return `the Codex desktop app bundle (${resolution.detail ?? resolution.bin})`;
+    default:
+      return 'not found';
+  }
+}
+
 export async function checkCodexBinary(): Promise<CheckResult> {
   if (process.env.CODEX_MOCK === '1' || process.env.CODEX_MOCK === 'true') {
     return {
@@ -242,7 +256,8 @@ export async function checkCodexBinary(): Promise<CheckResult> {
     };
   }
 
-  const bin = process.env.CODEX_BIN?.trim() || 'codex';
+  const resolved = resolveCodexBinary();
+  const bin = resolved.bin;
 
   return new Promise((resolve) => {
     const proc = spawn(bin, ['--version'], {
@@ -260,8 +275,8 @@ export async function checkCodexBinary(): Promise<CheckResult> {
         resolve({
           name: 'Codex binary',
           status: 'warn',
-          message: `Codex binary not found: ${bin} (Wingman will run Claude-only; list_sessions degrades gracefully)`,
-          fix: 'Install Codex CLI and ensure `codex` is on PATH, set CODEX_BIN=/path/to/codex, or set CODEX_MOCK=1',
+          message: `Codex binary not found (checked CODEX_BIN, PATH, and the Codex desktop app install; none resolved). Wingman will run Claude-only; list_sessions degrades gracefully.`,
+          fix: 'Install Codex CLI and ensure `codex` is on PATH, install the Codex desktop app, set CODEX_BIN=/path/to/codex, or set CODEX_MOCK=1',
         });
       } else {
         resolve({
@@ -279,7 +294,7 @@ export async function checkCodexBinary(): Promise<CheckResult> {
         resolve({
           name: 'Codex binary',
           status: 'pass',
-          message: `Codex available: ${version}`,
+          message: `Codex available: ${version} (via ${describeCodexBinarySource(resolved)})`,
         });
       } else {
         resolve({

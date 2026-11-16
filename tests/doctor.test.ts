@@ -1,4 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'node:events';
+
+vi.mock('../src/codex-binary.js', () => ({
+  resolveCodexBinary: vi.fn(() => ({ bin: 'codex', source: 'not_found' })),
+}));
 
 describe('Doctor checks', () => {
   beforeEach(() => {
@@ -98,5 +103,70 @@ describe('Doctor checks', () => {
       expect(result).toHaveProperty('message');
       expect(['pass', 'warn', 'fail']).toContain(result.status);
     }
+  });
+});
+
+describe('checkCodexBinary source reporting', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.doUnmock('node:child_process');
+    vi.resetModules();
+  });
+
+  it('names all three lookup strategies when nothing resolves', async () => {
+    const { resolveCodexBinary } = (await import('../src/codex-binary.js')) as unknown as {
+      resolveCodexBinary: ReturnType<typeof vi.fn>;
+    };
+    resolveCodexBinary.mockReturnValue({ bin: 'codex', source: 'not_found' });
+    // No real `codex` binary is expected on the test machine, so the real
+    // spawn('codex', ['--version']) genuinely ENOENTs here.
+    const { checkCodexBinary } = await import('../src/doctor.js');
+    const result = await checkCodexBinary();
+
+    expect(result.status).toBe('warn');
+    expect(result.message).toContain('CODEX_BIN');
+    expect(result.message).toContain('PATH');
+    expect(result.message).toContain('desktop app');
+  });
+
+  it('reports the desktop app bundle as the resolved source on success', async () => {
+    // Reset first so this test's mockReturnValue and the child_process doMock
+    // below apply to the SAME fresh module generation that doctor.js resolves
+    // against (otherwise doctor.js could keep using instances cached by an
+    // earlier test in this file).
+    vi.resetModules();
+    const { resolveCodexBinary } = (await import('../src/codex-binary.js')) as unknown as {
+      resolveCodexBinary: ReturnType<typeof vi.fn>;
+    };
+    resolveCodexBinary.mockReturnValue({
+      bin: 'C:\\...\\codex.exe',
+      source: 'desktop-app',
+      detail: 'C:\\...\\codex.exe',
+    });
+
+    // Guards against ever touching a real codex binary: `fakeSpawn` must be the
+    // thing that actually runs, verified below. If stale module caching let a
+    // real `spawn` through instead, `fakeSpawn` is never called and the
+    // assertion on it fails loudly instead of silently running a real process.
+    const fakeSpawn = vi.fn(() => {
+      const proc = new EventEmitter() as EventEmitter & { stdout: EventEmitter };
+      proc.stdout = new EventEmitter();
+      queueMicrotask(() => {
+        proc.stdout.emit('data', Buffer.from('codex-cli 0.169.0\n'));
+        proc.emit('close', 0);
+      });
+      return proc;
+    });
+    vi.doMock('node:child_process', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:child_process')>();
+      return { ...actual, spawn: fakeSpawn };
+    });
+
+    const { checkCodexBinary } = await import('../src/doctor.js');
+    const result = await checkCodexBinary();
+
+    expect(fakeSpawn).toHaveBeenCalled();
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('desktop app');
   });
 });

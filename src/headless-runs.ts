@@ -8,6 +8,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { buildCodexExecArgs } from './codex-exec.js';
 import { readRssBytes } from './process-rss.js';
+import { resolveCodexBinary } from './codex-binary.js';
 import type { ProviderRegistry } from './providers/index.js';
 import type { SendMessageOptions, SessionActivity } from './providers/types.js';
 
@@ -131,7 +132,7 @@ export class HeadlessRuns {
 
     let child: SpawnChild;
     try {
-      child = this.spawnFn(input.bin || process.env.CODEX_BIN || 'codex', plan.args, {
+      child = this.spawnFn(input.bin || resolveCodexBinary().bin, plan.args, {
         cwd: input.cwd,
         shell: false,
         windowsHide: true,

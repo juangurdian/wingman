@@ -19,6 +19,7 @@ import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
+import { resolveCodexBinary } from '../codex-binary.js';
 import type {
   Approval,
   SessionActivity,
@@ -858,7 +859,8 @@ export class CodexProvider implements SessionProvider {
 
   private async startProcess(): Promise<void> {
     // Prefer `codex app-server` (default stdio). See docs linked above.
-    const bin = process.env.CODEX_BIN?.trim() || 'codex';
+    const resolved = resolveCodexBinary();
+    const bin = resolved.bin;
     const args = (process.env.CODEX_APP_SERVER_ARGS ?? 'app-server')
       .split(/\s+/)
       .filter(Boolean);
@@ -871,8 +873,9 @@ export class CodexProvider implements SessionProvider {
       });
     } catch (err) {
       throw new Error(
-        `Failed to spawn Codex app-server (${bin} ${args.join(' ')}): ${(err as Error).message}. ` +
-          `Install Codex CLI and ensure \`codex\` is on PATH, or set CODEX_MOCK=1.`,
+        `Failed to spawn Codex app-server (${bin} ${args.join(' ')}) [resolved via ${resolved.source}]: ${(err as Error).message}. ` +
+          `Install Codex CLI and ensure \`codex\` is on PATH, install the Codex desktop app, ` +
+          `set CODEX_BIN=/path/to/codex, or set CODEX_MOCK=1.`,
       );
     }
 
