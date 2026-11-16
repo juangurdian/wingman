@@ -422,7 +422,9 @@ export class CodexProvider implements SessionProvider {
         const loadedResult = (await this.request('thread/loaded/list', {})) as { data?: string[] };
         const loadedThreads = loadedResult.data ?? [];
         if (loadedThreads.includes(sessionId)) {
-          note = 'Thread is already loaded by another client. Sending may conflict with that client.';
+          note =
+            'Thread is already loaded by another client. Sending may conflict with that client. ' +
+            'Pass force to send anyway.';
           console.warn(`[wingman] ${note}`);
         }
       } catch {
@@ -1109,10 +1111,12 @@ export class CodexProvider implements SessionProvider {
 }
 
 /**
- * Thread origin, only ever read from a field the app-server itself returns
- * (checked under a few plausible key names since the exact schema is
- * unverified), or 'wingman' when Wingman created or has already sent to this
- * thread. Never inferred or guessed beyond that.
+ * Thread origin, read only from a field the app-server itself returns under
+ * the thread's own data (checked under a few plausible key names since the
+ * exact schema is unverified: a false positive is possible if a future
+ * app-server build reuses one of those names for something unrelated), or
+ * 'wingman' when Wingman created or has already sent to this thread. Never
+ * computed from unrelated data or defaulted to a guessed value.
  */
 function resolveThreadOrigin(t: Record<string, unknown>, isOwnedByWingman: boolean): string | undefined {
   const candidate =

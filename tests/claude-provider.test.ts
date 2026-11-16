@@ -701,8 +701,9 @@ describe('ClaudeProvider desktop-app session discovery (real mode)', () => {
   afterEach(async () => {
     const { setMockLiveSessions } = await import('../src/claude-inbox.js');
     setMockLiveSessions([]);
-    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    const { setMockClaudeDesktopSessions, setMockClaudeDesktopAppState } = await import('../src/claude-desktop.js');
     setMockClaudeDesktopSessions(null);
+    setMockClaudeDesktopAppState(null);
     vi.unstubAllEnvs();
   });
 
@@ -806,5 +807,52 @@ describe('ClaudeProvider desktop-app session discovery (real mode)', () => {
     await provider.sendMessage('cli-123', 'hi', { headless: true });
     const result = await provider.interrupt('cli-123');
     expect(result.status).toBe('interrupted');
+  });
+
+  it('refuses a desktop session addressed by its local_ id when it has no cliSessionId yet', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([{ desktopId: 'local_new', title: 'Never run a turn' }]);
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const result = await provider.sendMessage('local_new', 'hi');
+    expect(result.status).toBe('not_delivered');
+  });
+
+  it('refuses a headless send for a desktop session with no cliSessionId instead of resuming a bogus id', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([{ desktopId: 'local_new', title: 'Never run a turn' }]);
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const result = await provider.sendMessage('local_new', 'hi', { headless: true });
+    expect(result.status).toBe('not_delivered');
+  });
+
+  it('keeps the fork-session note alongside the desktop headless warning', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([{ desktopId: 'local_abc', cliSessionId: 'cli-123', title: 'Demo' }]);
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+    const result = await provider.sendMessage('cli-123', 'hi', { headless: true, forkSession: true });
+    expect(result.note).toContain('will not appear in the app');
+    expect(result.note).toContain('fork_session is true');
+  });
+
+  it('resolves an archived desktop session local_ id for send/interrupt, even though list_sessions hides it', async () => {
+    const { setMockClaudeDesktopSessions } = await import('../src/claude-desktop.js');
+    setMockClaudeDesktopSessions([
+      { desktopId: 'local_archived', cliSessionId: 'cli-archived', title: 'Old', isArchived: true },
+    ]);
+    const { ClaudeProvider } = await import('../src/providers/claude.js');
+    const provider = new ClaudeProvider();
+
+    // list_sessions correctly omits the archived session (spec: non-archived only).
+    const sessions = await provider.listSessions();
+    expect(sessions.find((s) => s.id === 'cli-archived')).toBeUndefined();
+
+    // But a caller who already has the local_ id (e.g. from before it was archived)
+    // can still address it: the id resolves and the resulting turn is registered
+    // under the real cliSessionId, not the unresolved desktop id.
+    const result = await provider.sendMessage('local_archived', 'hi');
+    expect(result.sessionId).toBe('cli-archived');
   });
 });

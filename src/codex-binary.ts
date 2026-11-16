@@ -139,7 +139,11 @@ export function resolveCodexBinary(deps: ResolveCodexBinaryDeps = {}): CodexBina
   let result: CodexBinaryResolution;
   try {
     result = resolveFresh(deps);
-  } catch {
+  } catch (err) {
+    console.error(
+      '[wingman] Codex binary resolution failed unexpectedly:',
+      err instanceof Error ? err.message : err,
+    );
     result = { bin: 'codex', source: 'not_found' };
   }
   cached = { result, expiresAt: Date.now() + CACHE_TTL_MS };

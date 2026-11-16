@@ -473,7 +473,7 @@ Sessions returned by `list_sessions` include:
 | `tags` | `string[]?` | User-set tags for categorization/filtering |
 | `gitBranch` | `string?` | Git branch at end of session (discovered) |
 | `tag` | `string?` | Legacy single tag (discovered sessions only) |
-| `surface` | `'cli' \| 'claude-desktop' \| 'codex-desktop'?` | Which client surface the session lives in. Undefined means a terminal CLI session. |
+| `surface` | `'cli' \| 'claude-desktop'?` | Claude only: which client surface the session lives in. Undefined means a terminal CLI session. Codex sessions use `origin` instead. |
 | `appOpen` | `boolean?` | True when the desktop app process itself is running (Windows only for now) |
 | `appBusy` | `boolean?` | True when a per-turn desktop app process looks busy on this specific session |
 | `desktopSessionId` | `string?` | The Claude desktop app's own `local_<uuid>` id for this session |

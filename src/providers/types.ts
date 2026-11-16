@@ -10,11 +10,13 @@ export type SessionSource = 'wingman' | 'discovered';
 /**
  * Which client surface a session lives in. Undefined (or 'cli') covers
  * everything discovered today: a terminal CLI session, or a Codex thread
- * reached only through a Wingman-spawned app-server with no known desktop
- * origin. 'claude-desktop' / 'codex-desktop' mark sessions that live in the
- * respective desktop app, which has no supported external injection path.
+ * reached only through a Wingman-spawned app-server. 'claude-desktop' marks a
+ * session that lives in the Claude desktop app's Code tab, which has no
+ * supported external injection path. Codex sessions use the separate
+ * `origin` field instead, since whether a thread originated in the desktop
+ * app is only knowable when the app-server itself reports it.
  */
-export type SessionSurface = 'cli' | 'claude-desktop' | 'codex-desktop';
+export type SessionSurface = 'cli' | 'claude-desktop';
 
 export interface SessionSummary {
   id: string;
@@ -65,7 +67,7 @@ export interface SessionSummary {
   appBusy?: boolean;
   /** The Claude desktop app's own local_<uuid> id for this session, when known. */
   desktopSessionId?: string;
-  /** Codex: who/what created this thread, only set when the app-server reports it or Wingman owns it. Never inferred. */
+  /** Codex: who/what created this thread, read only from the app-server's own data or set to 'wingman' when this process owns the thread. Never computed from unrelated data. */
   origin?: string;
   /** Codex: plain-language instructions for opening this thread in the app. */
   openInAppHint?: string;

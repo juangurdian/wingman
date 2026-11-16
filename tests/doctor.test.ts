@@ -116,15 +116,33 @@ describe('checkCodexBinary source reporting', () => {
   });
 
   it('names all three lookup strategies when nothing resolves', async () => {
+    // Reset first so this test's mocks apply to the same fresh module
+    // generation doctor.js resolves against, matching the pattern in the
+    // "desktop app bundle" test below. Mocking spawn too (not relying on the
+    // test machine lacking a real `codex` on PATH) keeps this deterministic
+    // across machines and CI images.
+    vi.resetModules();
     const { resolveCodexBinary } = (await import('../src/codex-binary.js')) as unknown as {
       resolveCodexBinary: ReturnType<typeof vi.fn>;
     };
     resolveCodexBinary.mockReturnValue({ bin: 'codex', source: 'not_found' });
-    // No real `codex` binary is expected on the test machine, so the real
-    // spawn('codex', ['--version']) genuinely ENOENTs here.
+
+    const fakeSpawn = vi.fn(() => {
+      const proc = new EventEmitter() as EventEmitter & { stdout: EventEmitter };
+      proc.stdout = new EventEmitter();
+      const err = Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' });
+      queueMicrotask(() => proc.emit('error', err));
+      return proc;
+    });
+    vi.doMock('node:child_process', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:child_process')>();
+      return { ...actual, spawn: fakeSpawn };
+    });
+
     const { checkCodexBinary } = await import('../src/doctor.js');
     const result = await checkCodexBinary();
 
+    expect(fakeSpawn).toHaveBeenCalled();
     expect(result.status).toBe('warn');
     expect(result.message).toContain('CODEX_BIN');
     expect(result.message).toContain('PATH');

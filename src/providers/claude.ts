@@ -476,10 +476,16 @@ export class ClaudeProvider implements SessionProvider {
     return result;
   }
 
-  /** Translate a desktop local_<uuid> id to its Claude Code session id before any lookup below. */
+  /**
+   * Translate a desktop local_<uuid> id to its Claude Code session id before
+   * any lookup below. Includes archived sessions: a caller holding an id for
+   * a session the user later archived in the app should still resolve it,
+   * even though mergeDesktopSessions/listSessions hide archived rows from the
+   * default listing.
+   */
   private resolveId(id: string): string {
     if (useMock()) return id; // CLAUDE_MOCK sessions never merge with desktop discovery.
-    const match = listClaudeDesktopSessions().find((d) => d.desktopId === id);
+    const match = listClaudeDesktopSessions({ includeArchived: true }).find((d) => d.desktopId === id);
     return match?.cliSessionId ?? id;
   }
 
@@ -683,32 +689,54 @@ export class ClaudeProvider implements SessionProvider {
       if (desktopMatch && opts?.headless !== true) {
         return this.desktopSendRefusal(sessionId, desktopMatch);
       }
+      if (desktopMatch && !desktopMatch.cliSessionId) {
+        // headless was requested, but this desktop session has never run a
+        // Claude Code turn, so there is no session id the SDK could resume.
+        return this.desktopSendRefusal(sessionId, desktopMatch, true);
+      }
       if (desktopMatch) {
         const result = this.beginRealTurn(sessionId, text, cwd, binding, opts);
-        return { ...result, note: this.desktopHeadlessNote(desktopMatch) };
+        const desktopNote = this.desktopHeadlessNote(desktopMatch);
+        return { ...result, note: result.note ? `${desktopNote} ${result.note}` : desktopNote };
       }
     }
     return this.beginRealTurn(sessionId, text, cwd, binding, opts);
   }
 
+  /**
+   * Match by cliSessionId (the normal case) or by desktopId (a Claude desktop
+   * session that has never run a Claude Code turn yet has no cliSessionId, so
+   * its merged list_sessions id is its desktopId). Includes archived sessions
+   * for the same reason resolveId does.
+   */
   private findDesktopMatch(sessionId: string): ClaudeDesktopSession | undefined {
-    return listClaudeDesktopSessions().find((d) => d.cliSessionId === sessionId);
+    return listClaudeDesktopSessions({ includeArchived: true }).find(
+      (d) => d.cliSessionId === sessionId || d.desktopId === sessionId,
+    );
   }
 
-  private desktopSendRefusal(sessionId: string, match: ClaudeDesktopSession): SendMessageResult {
+  private desktopSendRefusal(
+    sessionId: string,
+    match: ClaudeDesktopSession,
+    noCliSession = false,
+  ): SendMessageResult {
+    const label = match.title ? ` "${match.title}"` : '';
+    const note = noCliSession
+      ? `This Claude Desktop app session${label} has not run a Claude Code turn yet, ` +
+        'so there is no session for a headless resume to continue. ' +
+        'Send a message from within the Claude Desktop app first.'
+      : `No supported way to deliver this message into the Claude Desktop app session${label}. ` +
+        'The desktop app does not accept external text injection. ' +
+        'Open it in the Claude desktop app to continue the conversation, ' +
+        'or pass headless: true to run a headless resume instead ' +
+        '(the reply will not appear in the app until it is reopened).';
     return {
       sessionId,
       requestedSessionId: sessionId,
       status: 'not_delivered',
       inboxState: 'not_delivered',
       attachedToTerminal: false,
-      note:
-        'No supported way to deliver this message into the Claude Desktop app session' +
-        (match.title ? ` "${match.title}"` : '') +
-        '. The desktop app does not accept external text injection. ' +
-        'Open it in the Claude desktop app to continue the conversation, ' +
-        'or pass headless: true to run a headless resume instead ' +
-        '(the reply will not appear in the app until it is reopened).',
+      note,
     };
   }
 
